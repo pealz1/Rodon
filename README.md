@@ -1,3 +1,11 @@
+# Rodon
+
+Rodon is pealz1’s fork of **Evanovar RAM**, the Windows account manager written in Python by **evanovar**. Evanovar credits **ic3w0lf22** for creating the original Roblox Account Manager that inspired it. [Evanovar RAM](https://github.com/evanovar/RobloxAccountManager) · [ic3w0lf22’s original project](https://github.com/ic3w0lf22/Roblox-Account-Manager) · [GPLv3 license](LICENSE)
+
+The `main` branch contains the Python application. The existing Rust implementation is on the [rust-rewrite branch](https://github.com/pealz1/Rodon/tree/rust-rewrite). The installation instructions and release downloads below belong to Evanovar RAM.
+
+## Upstream documentation
+
 [![Latest release](https://img.shields.io/github/v/release/evanovar/RobloxAccountManager?label=release)](https://github.com/evanovar/RobloxAccountManager/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/evanovar/RobloxAccountManager/total)](https://github.com/evanovar/RobloxAccountManager/releases)
 [![License](https://img.shields.io/github/license/evanovar/RobloxAccountManager)](LICENSE)
