@@ -1,7 +1,7 @@
 //! Model Context Protocol server over stdio, so Claude, Codex and other MCP
 //! clients can manage accounts. Line-delimited JSON-RPC 2.0.
 //!
-//! Launch with `NovaRAM --mcp`. It opens the same vault as the GUI; the
+//! Launch with `Rodon --mcp`. It opens the same vault as the GUI; the
 //! cross-process lock keeps writes consistent between them.
 
 use super::commands;
@@ -51,8 +51,8 @@ fn handle(core: &Core, request: &Value, expose: bool) -> Option<Value> {
             json!({
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": { "tools": {} },
-                "serverInfo": { "name": "nova-ram", "version": crate::VERSION },
-                "instructions": "Manage Roblox accounts in Nova RAM: list, add, import, launch, group and more. Cookies are never returned unless the server is configured to expose secrets. Destructive tools need confirm:true.",
+                "serverInfo": { "name": "rodon", "version": crate::VERSION },
+                "instructions": "Manage Roblox accounts in Rodon: list, add, import, launch, group and more. Cookies are never returned unless the server is configured to expose secrets. Destructive tools need confirm:true.",
             }),
         )),
         "ping" => Some(result_response(id, json!({}))),

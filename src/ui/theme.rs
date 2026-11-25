@@ -6,6 +6,14 @@ use eframe::egui::{self, Color32, CornerRadius, Stroke};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Palette {
+    pub pressed: Color32,
+    pub hover: Color32,
+    pub selected: Color32,
+    pub soft: Color32,
+    pub bright: Color32,
+    pub deep: Color32,
+    pub active_accent: Color32,
+    pub hover_accent: Color32,
     pub bg: Color32,
     pub surface: Color32,
     pub surface_alt: Color32,
@@ -35,6 +43,14 @@ impl Palette {
             muted: Color32::from_rgb(0x9a, 0xa3, 0xb5),
             faint: Color32::from_rgb(0x66, 0x6e, 0x80),
             accent,
+            pressed: accent.gamma_multiply(0.65),
+            hover: accent.gamma_multiply(0.45),
+            selected: accent.gamma_multiply(0.35),
+            soft: accent.gamma_multiply(0.55),
+            bright: accent.gamma_multiply(1.1),
+            deep: accent.gamma_multiply(0.2),
+            active_accent: accent.gamma_multiply(0.85),
+            hover_accent: accent.gamma_multiply(1.1),
             accent_text: Color32::WHITE,
             online: Color32::from_rgb(0x4a, 0xd2, 0x95),
             in_game: Color32::from_rgb(0x5b, 0x8c, 0xff),
@@ -55,6 +71,14 @@ impl Palette {
             muted: Color32::from_rgb(0x5a, 0x62, 0x74),
             faint: Color32::from_rgb(0x8a, 0x92, 0xa4),
             accent,
+            pressed: accent.gamma_multiply(0.65),
+            hover: accent.gamma_multiply(0.45),
+            selected: accent.gamma_multiply(0.35),
+            soft: accent.gamma_multiply(0.55),
+            bright: accent.gamma_multiply(1.1),
+            deep: accent.gamma_multiply(0.2),
+            active_accent: accent.gamma_multiply(0.85),
+            hover_accent: accent.gamma_multiply(1.1),
             accent_text: Color32::WHITE,
             online: Color32::from_rgb(0x1f, 0xa8, 0x6b),
             in_game: Color32::from_rgb(0x3a, 0x6f, 0xe6),
@@ -91,6 +115,70 @@ pub fn palette(mode: ThemeMode, accent_hex: &str, system_dark: bool) -> Palette 
     if dark { Palette::dark(accent) } else { Palette::light(accent) }
 }
 
+pub fn resolved(settings: &crate::store::settings::Settings, system_dark: bool) -> Palette {
+    let mut p = palette(settings.theme, &settings.accent, system_dark);
+    if let Some(t) = &settings.appearance {
+        if let Some(c) = t.colors.get("BG").and_then(|s| parse_hex(s)) {
+            p.bg = c;
+        }
+        if let Some(c) = t.colors.get("PANEL").and_then(|s| parse_hex(s)) {
+            p.surface = c;
+        }
+        if let Some(c) = t.colors.get("INPUT").and_then(|s| parse_hex(s)) {
+            p.surface_alt = c;
+        }
+        if let Some(c) = t.colors.get("TEXT").and_then(|s| parse_hex(s)) {
+            p.text = c;
+        }
+        if let Some(c) = t.colors.get("MUTED").and_then(|s| parse_hex(s)) {
+            p.muted = c;
+        }
+        if let Some(c) = t.colors.get("LINE").and_then(|s| parse_hex(s)) {
+            p.line = c;
+        }
+        if let Some(c) = t.colors.get("NOTE").and_then(|s| parse_hex(s)) {
+            p.star = c;
+        }
+        if let Some(c) = t.colors.get("RAISED").and_then(|s| parse_hex(s)) {
+            p.elevated = c;
+        }
+        if let Some(c) = t.colors.get("ACCENT").and_then(|s| parse_hex(s)) {
+            p.accent = c;
+        }
+        if let Some(c) = t.colors.get("ON_ACCENT").and_then(|s| parse_hex(s)) {
+            p.accent_text = c;
+        }
+        if let Some(c) = t.colors.get("ACCENT_TEXT").and_then(|s| parse_hex(s)) {
+            p.in_game = c;
+        }
+        if let Some(c) = t.colors.get("PRESSED").and_then(|s| parse_hex(s)) {
+            p.pressed = c;
+        }
+        if let Some(c) = t.colors.get("HOVER").and_then(|s| parse_hex(s)) {
+            p.hover = c;
+        }
+        if let Some(c) = t.colors.get("SELECT").and_then(|s| parse_hex(s)) {
+            p.selected = c;
+        }
+        if let Some(c) = t.colors.get("ACCENT_SOFT").and_then(|s| parse_hex(s)) {
+            p.soft = c;
+        }
+        if let Some(c) = t.colors.get("ACCENT_BRIGHT").and_then(|s| parse_hex(s)) {
+            p.bright = c;
+        }
+        if let Some(c) = t.colors.get("ACCENT_DEEP").and_then(|s| parse_hex(s)) {
+            p.deep = c;
+        }
+        if let Some(c) = t.colors.get("ACCENT_PRESSED").and_then(|s| parse_hex(s)) {
+            p.active_accent = c;
+        }
+        if let Some(c) = t.colors.get("ACCENT_HOVER").and_then(|s| parse_hex(s)) {
+            p.hover_accent = c;
+        }
+    }
+    p
+}
+
 /// Applies a palette and the shared spacing/rounding to an egui context.
 pub fn apply(ctx: &egui::Context, palette: &Palette, scale: f32) {
     ctx.all_styles_mut(|style| style_palette(style, palette));
@@ -108,9 +196,9 @@ fn style_palette(style: &mut egui::Style, palette: &Palette) {
     visuals.faint_bg_color = palette.surface_alt;
     visuals.window_corner_radius = CornerRadius::same(12);
     visuals.menu_corner_radius = CornerRadius::same(10);
-    visuals.selection.bg_fill = palette.accent.gamma_multiply(0.35);
+    visuals.selection.bg_fill = palette.selected;
     visuals.selection.stroke = Stroke::new(1.0, palette.accent);
-    visuals.hyperlink_color = palette.accent;
+    visuals.hyperlink_color = palette.bright;
 
     let widgets = &mut visuals.widgets;
     widgets.noninteractive.bg_fill = palette.surface;
@@ -122,10 +210,10 @@ fn style_palette(style: &mut egui::Style, palette: &Palette) {
     }
     widgets.inactive.bg_fill = palette.surface_alt;
     widgets.inactive.weak_bg_fill = palette.surface_alt;
-    widgets.hovered.bg_fill = palette.elevated;
-    widgets.hovered.weak_bg_fill = palette.elevated;
-    widgets.hovered.bg_stroke = Stroke::new(1.0, palette.accent.gamma_multiply(0.6));
-    widgets.active.bg_fill = palette.accent.gamma_multiply(0.5);
+    widgets.hovered.bg_fill = palette.hover;
+    widgets.hovered.weak_bg_fill = palette.hover;
+    widgets.hovered.bg_stroke = Stroke::new(1.0, palette.hover_accent);
+    widgets.active.bg_fill = palette.pressed;
     widgets.active.weak_bg_fill = palette.accent.gamma_multiply(0.5);
 
     let spacing = &mut style.spacing;

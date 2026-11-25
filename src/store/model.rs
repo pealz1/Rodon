@@ -85,6 +85,7 @@ pub struct RecentGame {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SavedPrivateServer {
+    pub active: Option<bool>,
     pub id: String,
     pub name: String,
     pub place_id: u64,
@@ -111,7 +112,7 @@ pub struct ServerVisit {
     pub job_id: String,
     pub server_ip: String,
     pub game_name: String,
-    /// Set when the visit was a private server launched from Nova.
+    /// Set when the visit was a private server launched from Rodon.
     pub private_server: String,
     pub left_at: Option<DateTime<Utc>>,
 }
@@ -138,6 +139,7 @@ pub struct LaunchPreset {
 #[serde(default)]
 pub struct RejoinConfig {
     pub account: String,
+    pub target_user: String,
     pub place_id: u64,
     pub private_server: String,
     pub job_id: String,
@@ -151,6 +153,7 @@ pub struct RejoinConfig {
 impl Default for RejoinConfig {
     fn default() -> Self {
         Self {
+            target_user: String::new(),
             account: String::new(),
             place_id: 0,
             private_server: String::new(),

@@ -1,116 +1,58 @@
-[![CI](https://img.shields.io/github/actions/workflow/status/pealz1/RobloxAccountManager/ci.yml?label=ci)](https://github.com/pealz1/RobloxAccountManager/actions)
-[![Latest release](https://img.shields.io/github/v/release/pealz1/RobloxAccountManager?label=release)](https://github.com/pealz1/RobloxAccountManager/releases/latest)
-[![License](https://img.shields.io/github/license/pealz1/RobloxAccountManager)](LICENSE)
-![OS](https://img.shields.io/badge/os-windows-0078D4)
-![Built with Rust](https://img.shields.io/badge/built%20with-rust-ce412b)
+# Rodon
 
-# Nova RAM
+Rodon is a native Windows account manager for Roblox, written in Rust. Use it to organize accounts, find games and private servers, and manage running Roblox windows.
 
-**Nova RAM** is a fast, native Windows app for managing many Roblox accounts:
-organize them, launch them into games and private servers, run multiple clients
-at once, and automate the tedious parts. It is a full **Rust** rewrite — one small
-static executable, no runtime to install, instant startup.
+## Credits
 
-It is a fork of [Evanovar RAM](https://github.com/evanovar/RobloxAccountManager)
-(a Python app), which was itself inspired by
-[ic3w0lf's original Roblox Account Manager](https://github.com/ic3w0lf22/Roblox-Account-Manager).
-Nova RAM can import directly from both.
+**evanovar** created the Python Roblox Account Manager that Rodon forks. **ic3w0lf22** created the earlier Roblox Account Manager that inspired it. Rodon builds on the existing Rust rewrite in **pealz1**’s fork. Source and derivative work are distributed under GPL-3.0-only. [Evanovar RAM](https://github.com/evanovar/RobloxAccountManager) · [Original Roblox Account Manager](https://github.com/ic3w0lf22/Roblox-Account-Manager) · [License](LICENSE)
 
-> [!IMPORTANT]
-> - **Open source.** Every line is here to read; if you don't trust the `.exe`, build it yourself.
-> - **Reproducible.** Release binaries are built from the tagged source by GitHub Actions and ship with a published SHA-256.
-> - **Unsigned.** Windows or antivirus may warn about a new unsigned binary. That is expected for small open-source releases.
+## Run on Windows
 
-## Highlights
+The Windows CI run for each Rust commit builds an artifact named `Rodon-Windows-x64`. Open a successful run, download its artifact, extract `Rodon.exe` into a writable folder and run it. [Windows builds](https://github.com/pealz1/Rodon/actions/workflows/ci.yml?query=branch%3Arodon-rust)
 
-- **Accounts** — groups, notes, aliases, stars, avatars, search, and multi-select
-  actions. Status and live memory use show next to each account.
-- **Launching** — join a Place, a private server (VIP/share link or code), a
-  specific Job ID, the emptiest public server, another user's game, or the home
-  page. A built-in game search resolves Place IDs by name.
-- **Servers** *(new)* — a searchable history of every server each account has
-  joined, read from the Roblox logs, with one-click rejoin.
-- **Private Servers** — list the servers an account owns, refresh join links, save
-  the ones you use, and launch straight into them.
-- **Multi Roblox** — run many clients with the mutex method (no admin) or by
-  closing singleton handles in-process (admin), plus the Error-773 cookie-lock fix.
-  No external `handle64.exe` download.
-- **Window tools** — tile all clients into a clean grid (fixed so windows never
-  hide behind the taskbar), rename windows per account, hide/show/close clients.
-- **Auto-Rejoin & Anti-AFK** — keep accounts in a game and nudge them so they
-  aren't kicked for inactivity.
-- **Import** — cookies, `user:pass`, CSV, JSON, Evanovar `saved_accounts.json`
-  (incl. password/hardware), ic3w0lf `AccountData.json` (plain/DPAPI/password), and
-  portable backups.
-- **Automation** — a loopback HTTP API and an **MCP server** so tools like Claude
-  and Codex can list, add, launch and manage accounts. See [docs/API.md](docs/API.md).
-- **Security** — accounts are stored in an encrypted vault (Windows account key or
-  a password), written atomically with a backup copy.
-
-## Installation
-
-1. Open the [latest release](https://github.com/pealz1/RobloxAccountManager/releases/latest).
-2. Download `NovaRAM-v<version>.exe` (and, if you like, verify it against the
-   published `.sha256`).
-3. Put it in a folder where it may keep its data, and run it.
-
-## Run from source
-
-Requirements: Windows 10/11 and a [Rust toolchain](https://rustup.rs).
+To build locally, use the Windows x64 MSVC Rust toolchain (1.95 or newer), the Visual Studio C++ build tools and a Windows SDK.
 
 ```powershell
-git clone https://github.com/pealz1/RobloxAccountManager.git
-cd RobloxAccountManager
-cargo run --release
+git clone https://github.com/pealz1/Rodon.git
+cd Rodon
+cargo build --release --locked
+.\target\release\Rodon.exe
 ```
 
-The build produces a single `target/release/NovaRAM.exe`.
+On first launch, choose **Accounts → Add account**. Start Quick Sign-in and approve the displayed code in the official Roblox sign-in flow for your account. Registration opens on Roblox and is completed in the browser.
 
-## Data & privacy
+## What you can do
 
-Nova RAM stores everything under `NovaData` next to the executable. Put it
-elsewhere with `--data-dir "D:/Profiles/Alt"` or the `NOVA_DATA_DIR` environment
-variable (handy for separate profiles).
+| Area | Features |
+| --- | --- |
+| Accounts | Search, filter, group, reorder, star, edit notes and aliases, check session status, and import or export encrypted account backups. |
+| Games and servers | Search or browse games, save favorites, inspect public servers, join by place or job ID, follow a joinable user, review join history and manage private-server links. |
+| Running clients | Launch multiple accounts, inspect CPU and memory, arrange or hide windows, set a grid hotkey, configure Auto-Rejoin and schedule Anti-AFK input. |
+| Roblox settings | Stage and apply XML settings, manage launcher preferences, download a Roblox Player build, and install portable Chromium for browser approval. |
+| Desktop | Detach pages, view logs in the Console, use the tray, configure Windows startup, and import or export `.ramtheme` files with a still image, GIF or video background. |
+| Local integrations | Use the optional loopback HTTP and WebSocket services or run the MCP server over stdio. |
 
-Network use is limited to what you ask for: Roblox APIs for account, game,
-presence, launch and private-server features; GitHub for update checks; and the
-connectivity check used by Auto-Rejoin. Account cookies never leave your machine
-unless you explicitly enable the API and turn on *Expose secrets*.
+The feature map records implementation locations, upstream file compatibility and verification limits. [Feature map](docs/PARITY.md) · [Local API guide](docs/API.md)
 
-## Command-line
+## Profiles and migration
 
-| Flag | Effect |
-| :--- | :--- |
-| `--data-dir <path>` | Use a specific data folder |
-| `--mcp` | Run the MCP server over stdio (for AI tools) |
-| `--version` | Print the version and exit |
+By default, Rodon writes its vault, settings, logs and themes to `RodonData` beside the executable. New vaults use Windows account protection. Select password protection to unlock the vault with a passphrase. Use **Settings** to write a password-protected portable backup.
 
-## Contributing
+To migrate an Evanovar hardware-encrypted profile, export a password-protected account backup from Evanovar RAM on the original PC. Import that file in Rodon with its backup password. Rodon can also read supported `saved_accounts.json` and ic3w0lf22 `AccountData.json` files that you choose in the import dialog.
 
-Issues and pull requests are welcome. Before opening a PR, run:
+| Option | Effect |
+| --- | --- |
+| `--data-dir "D:\Profiles\Rodon"` or `RODON_DATA_DIR` | Use a separate profile. The command-line option takes precedence. |
+| `--mcp` | Run the local MCP server over standard input and output. |
+| `--smoke-test` | Render each navigation page and a detached console in a temporary profile, then exit. |
+| `--version` | Print the version and exit. |
+
+## Development checks
 
 ```powershell
 cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test --all
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked --all
+cargo build --release --locked
+Start-Process .\target\release\Rodon.exe -ArgumentList '--smoke-test' -Wait -PassThru
 ```
-
-[docs/PARITY.md](docs/PARITY.md) maps every module of the original Python app to
-its place here.
-
-## Relationship to upstream
-
-Because Nova RAM is a full-language rewrite, upstream changes can't be merged as
-diffs. A scheduled job watches `evanovar/RobloxAccountManager` and opens an issue
-listing new upstream commits worth porting, so nothing is silently missed.
-
-## Disclaimer
-
-Provided for account-management and educational purposes. You are responsible for
-following Roblox's Terms of Use. The maintainers are not responsible for account
-actions, moderation, or data loss.
-
-## License
-
-Nova RAM is licensed under the [GNU General Public License v3.0](LICENSE), the same
-license as the projects it builds on.

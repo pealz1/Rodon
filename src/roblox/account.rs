@@ -173,7 +173,7 @@ pub fn auth_ticket(cookie: &str) -> AppResult<String> {
 // ---------- Quick sign-in (cross-device login codes) ----------
 
 /// A pending quick sign-in. The user approves `code` on roblox.com/login/enterCode
-/// (or in the Roblox app) while Nova polls for the result.
+/// (or in the Roblox app) while Rodon polls for the result.
 #[derive(Debug, Clone)]
 pub struct QuickLogin {
     pub code: String,

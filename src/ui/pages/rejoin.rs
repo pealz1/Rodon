@@ -1,7 +1,7 @@
 //! The Auto-Rejoin page: configure and run per-account rejoin workers.
 
 use crate::store::model::RejoinConfig;
-use crate::ui::NovaApp;
+use crate::ui::RodonApp;
 use crate::ui::widgets;
 use eframe::egui::{self, RichText};
 use std::sync::Arc;
@@ -23,11 +23,16 @@ impl RejoinDialog {
     }
 }
 
-impl NovaApp {
+impl RodonApp {
     pub(in crate::ui) fn page_auto_rejoin(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label(RichText::new("Auto-Rejoin").size(22.0).strong().color(self.palette.text));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Start all").clicked() {
+                    for config in &self.core.snapshot().auto_rejoin {
+                        self.rejoin.start(&self.services, config.clone());
+                    }
+                }
                 if widgets::ghost_button(ui, &self.palette, &format!("{} Stop all", egui_phosphor::regular::STOP)).clicked() {
                     self.rejoin.stop_all();
                 }
@@ -116,7 +121,7 @@ impl NovaApp {
     }
 }
 
-pub fn show_dialog(app: &mut NovaApp, ctx: &egui::Context, mut dialog: RejoinDialog) -> Option<RejoinDialog> {
+pub fn show_dialog(app: &mut RodonApp, ctx: &egui::Context, mut dialog: RejoinDialog) -> Option<RejoinDialog> {
     let mut keep = true;
     let accounts = app.accounts.clone();
     egui::Modal::new(egui::Id::new("rejoin-dialog")).show(ctx, |ui| {
@@ -148,6 +153,10 @@ pub fn show_dialog(app: &mut NovaApp, ctx: &egui::Context, mut dialog: RejoinDia
             ui.add(egui::DragValue::new(&mut dialog.config.max_retries).range(1..=100));
             ui.end_row();
         });
+        ui.label("Job ID");
+        ui.text_edit_singleline(&mut dialog.config.job_id);
+        ui.label("Follow a user (optional username or ID)");
+        ui.text_edit_singleline(&mut dialog.config.target_user);
         ui.checkbox(&mut dialog.config.check_presence, "Use presence to detect disconnects");
         ui.checkbox(&mut dialog.config.check_place_id, "Only count being in the target place");
         ui.checkbox(&mut dialog.config.check_internet, "Wait for internet before relaunching");
@@ -156,13 +165,20 @@ pub fn show_dialog(app: &mut NovaApp, ctx: &egui::Context, mut dialog: RejoinDia
         ui.horizontal(|ui| {
             if widgets::primary_button(ui, &app.palette, "Save").clicked() {
                 dialog.config.place_id = dialog.place_text.trim().parse().unwrap_or(0);
-                if dialog.config.account.is_empty() || dialog.config.place_id == 0 {
+                if dialog.config.account.is_empty() || (dialog.config.place_id == 0 && dialog.config.target_user.trim().is_empty()) {
                     app.show_toast("Pick an account and a Place ID", true);
                 } else {
                     let config = dialog.config.clone();
+                    let accounts = if !dialog.editing && app.selection.contains(&config.account) {
+                        app.selected_keys()
+                    } else {
+                        vec![config.account.clone()]
+                    };
                     let _ = app.core.edit(move |data| {
-                        data.auto_rejoin.retain(|c| c.account != config.account);
-                        data.auto_rejoin.push(config);
+                        for account in accounts {
+                            data.auto_rejoin.retain(|c| c.account != account);
+                            data.auto_rejoin.push(RejoinConfig { account, ..config.clone() });
+                        }
                     });
                     keep = false;
                 }

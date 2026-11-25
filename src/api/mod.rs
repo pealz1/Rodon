@@ -4,6 +4,7 @@
 pub mod commands;
 pub mod http;
 pub mod mcp;
+pub mod websocket;
 
 use crate::core::Core;
 use std::sync::Arc;

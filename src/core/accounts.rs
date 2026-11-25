@@ -57,13 +57,29 @@ impl Core {
 
     /// Stores already-resolved imported accounts (identity resolution happens in the caller).
     pub fn apply_import(&self, batch: &ImportBatch) -> AppResult<ImportOutcome> {
+        self.import_accounts(batch, false)
+    }
+
+    pub fn import_accounts(&self, batch: &ImportBatch, replace: bool) -> AppResult<ImportOutcome> {
         let mut outcome = ImportOutcome { skipped: batch.skipped, need_sign_in: batch.needs_sign_in().len(), ..Default::default() };
-        let importable: Vec<Account> =
-            batch.accounts.iter().filter(|a| a.has_cookie()).cloned().map(ImportedAccount::into_account).collect();
+        let importable: Vec<Account> = if batch.complete_accounts.is_empty() {
+            batch.accounts.iter().filter(|a| a.has_cookie()).cloned().map(ImportedAccount::into_account).collect()
+        } else {
+            batch.complete_accounts.clone()
+        };
+        if replace && batch.skipped > 0 {
+            return Err(AppError::invalid(
+                "BACKUP_PARTIAL",
+                "This backup has unreadable entries. Merge it or choose another backup before replacing accounts.",
+            ));
+        }
         let favorites = batch.favorites.clone();
         let recents = batch.recent_games.clone();
         let groups = batch.groups.clone();
         self.edit(|data| {
+            if replace {
+                data.accounts.clear();
+            }
             for group in &groups {
                 data.ensure_group(group);
             }

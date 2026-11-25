@@ -77,14 +77,30 @@ pub fn start(services: &Arc<Services>) {
 }
 
 fn run(services: Arc<Services>, stop: &AtomicBool) {
+    let mut last = HashMap::new();
+    let mut sampled = std::time::Instant::now();
+    let cores = std::thread::available_parallelism().map(usize::from).unwrap_or(1) as f64;
     loop {
         let interval = Duration::from_secs(services.core.settings().instance_scan_secs.max(2) as u64);
         // Pick up changes another process (the MCP server, a second window) made to
         // the vault, so the GUI stays current without touching the file lock per frame.
         services.core.refresh_from_disk();
-        let (activity, map) = snapshot();
-        services.live.set_activity(activity);
-        services.live.set_instances(instances_from(&map));
+        let (mut activity, map) = snapshot();
+        let elapsed = sampled.elapsed().as_secs_f64().max(0.001);
+        sampled = std::time::Instant::now();
+        let mut current = HashMap::new();
+        for (&pid, &user) in &map {
+            if let Some(ticks) = process::cpu_ticks(pid) {
+                if let Some(&prior) = last.get(&pid) {
+                    activity.entry(user).or_default().cpu_percent += ticks.saturating_sub(prior) as f64 / (100000.0 * elapsed * cores);
+                }
+                current.insert(pid, ticks);
+            }
+        }
+        last = current;
+        let settings = services.core.settings();
+        services.live.set_activity(if settings.activity_monitor { activity } else { HashMap::new() });
+        services.live.set_instances(instances_from(&map, &services.core.accounts()));
         services.request_repaint();
         if interruptible_sleep(stop, interval) {
             return;
@@ -92,13 +108,13 @@ fn run(services: Arc<Services>, stop: &AtomicBool) {
     }
 }
 
-fn instances_from(map: &HashMap<ProcId, u64>) -> Vec<Instance> {
-    let mut names: HashMap<u64, String> = HashMap::new();
-    let mut list: Vec<Instance> = map
-        .iter()
-        .map(|(proc, user_id)| {
-            let username = names.entry(*user_id).or_default().clone();
-            Instance { pid: proc.pid, user_id: *user_id, username, hidden: false }
+fn instances_from(map: &HashMap<ProcId, u64>, accounts: &[crate::store::model::Account]) -> Vec<Instance> {
+    let mut list: Vec<_> = process::list_roblox()
+        .into_iter()
+        .map(|p| {
+            let user_id = map.get(&p.id).copied().unwrap_or_default();
+            let username = accounts.iter().find(|a| a.user_id == user_id && user_id != 0).map(|a| a.username.clone()).unwrap_or_default();
+            Instance { pid: p.id.pid, user_id, username, hidden: super::instances::is_hidden(p.id) }
         })
         .collect();
     list.sort_by_key(|i| i.pid);

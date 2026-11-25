@@ -1,12 +1,12 @@
-# Nova RAM automation: local API & MCP
+# Rodon local API and MCP
 
-Nova RAM exposes the same set of actions two ways:
+HTTP and MCP share a command set.
 
 - a **local HTTP API** on `127.0.0.1` for scripts, and
 - an **MCP server** over stdio so AI tools (Claude, Codex, and other MCP clients)
   can manage accounts directly.
 
-Both share one command set and the same safety rules:
+The following controls apply to those interfaces.
 
 - **Loopback only.** The HTTP API binds `127.0.0.1`; it never listens on the network.
 - **Token auth.** Every HTTP request needs `Authorization: Bearer <token>`.
@@ -22,7 +22,7 @@ Both share one command set and the same safety rules:
 ## Local HTTP API
 
 Enable it under **Settings → Local API & AI (MCP)** and copy the token shown there
-(regenerate it any time). It listens on the configured port (default `7963`).
+(regenerate it any time). It listens on the configured port (default `7964`).
 
 ### Endpoints
 
@@ -38,15 +38,15 @@ Enable it under **Settings → Local API & AI (MCP)** and copy the token shown t
 ```bash
 TOKEN="paste-from-settings"
 # List accounts
-curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7963/accounts
+curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7964/accounts
 
 # Launch two accounts into a place
-curl -s -X POST http://127.0.0.1:7963/tools/launch \
+curl -s -X POST http://127.0.0.1:7964/tools/launch \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"accounts":["Builderman","1234567"],"place_id":"606849621"}'
 
 # Delete an account (needs confirm)
-curl -s -X POST http://127.0.0.1:7963/tools/delete_account \
+curl -s -X POST http://127.0.0.1:7964/tools/delete_account \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"account":"OldAlt","confirm":true}'
 ```
@@ -56,16 +56,22 @@ Errors return `{ "error": "...", "code": "..." }` with a matching HTTP status
 
 ---
 
-## MCP server (Claude, Codex, …)
+## Legacy WebSocket integration
 
-Run Nova RAM as an MCP server over stdio:
+Enable WebSocket in Settings and set its password. Connect to `ws://127.0.0.1:7963` with a local client. With authentication enabled, prefix each command with `AUTH <password> | `. A successful `Ping` returns `{"ok":true,"result":"Pong"}`. `GetStatus` returns an array of running clients.
+
+Supported commands are `Ping`, `AccountList`, `GetStatus`, `Launch <account> <place> [private-server] [job]`, `JoinUser <account> <target>`, `AutoRejoin <start|stop> <account>` and `Add <import-text>`. An accepted `Add` returns `pending_review: true`. The desktop user reviews the imported data before adding accounts. Browser origins are refused. HTTP and WebSocket need separate ports if enabled together.
+
+## MCP server over stdio
+
+Run Rodon as an MCP server over stdio:
 
 ```
-NovaRAM.exe --mcp
+Rodon.exe --mcp
 ```
 
 It opens the same vault as the app (a cross-process lock keeps writes consistent
-if both run at once). If the vault is password-protected, set `NOVA_VAULT_PASSWORD`
+if both run at once). If the vault is password-protected, set `RODON_VAULT_PASSWORD`
 in the server's environment.
 
 ### Claude Desktop / Claude Code
@@ -75,8 +81,8 @@ Add to your MCP config (`claude_desktop_config.json`, or `.mcp.json` for Claude 
 ```json
 {
   "mcpServers": {
-    "nova-ram": {
-      "command": "C:\\\\Path\\\\To\\\\NovaRAM.exe",
+    "rodon": {
+      "command": "C:\\Path\\To\\Rodon.exe",
       "args": ["--mcp"]
     }
   }
@@ -86,8 +92,8 @@ Add to your MCP config (`claude_desktop_config.json`, or `.mcp.json` for Claude 
 ### Codex
 
 ```toml
-[mcp_servers.nova-ram]
-command = "C:\\Path\\To\\NovaRAM.exe"
+[mcp_servers.rodon]
+command = "C:\\Path\\To\\Rodon.exe"
 args = ["--mcp"]
 ```
 

@@ -54,7 +54,7 @@ fn download(url: &str) -> Option<Vec<u8>> {
 /// On-disk + in-memory avatar cache keyed by user id.
 pub struct AvatarCache {
     dir: PathBuf,
-    max_age: Duration,
+    days: std::sync::atomic::AtomicU32,
     memory: Mutex<HashMap<u64, Arc<Vec<u8>>>>,
 }
 
@@ -65,7 +65,11 @@ impl AvatarCache {
 
     pub fn with_dir(dir: PathBuf, cache_days: u32) -> AvatarCache {
         let _ = std::fs::create_dir_all(&dir);
-        AvatarCache { dir, max_age: Duration::from_secs(cache_days as u64 * 86_400), memory: Mutex::new(HashMap::new()) }
+        AvatarCache { dir, days: std::sync::atomic::AtomicU32::new(cache_days), memory: Mutex::new(HashMap::new()) }
+    }
+
+    pub fn set_days(&self, days: u32) {
+        self.days.store(days, std::sync::atomic::Ordering::Relaxed);
     }
 
     fn path(&self, user_id: u64) -> PathBuf {
@@ -73,12 +77,13 @@ impl AvatarCache {
     }
 
     fn is_stale(&self, path: &std::path::Path) -> bool {
-        if self.max_age.is_zero() {
+        let max_age = Duration::from_secs(u64::from(self.days.load(std::sync::atomic::Ordering::Relaxed)) * 86400);
+        if max_age.is_zero() {
             return false; // 0 = keep forever
         }
         std::fs::metadata(path)
             .and_then(|m| m.modified())
-            .map(|modified| SystemTime::now().duration_since(modified).unwrap_or_default() > self.max_age)
+            .map(|modified| SystemTime::now().duration_since(modified).unwrap_or_default() > max_age)
             .unwrap_or(true)
     }
 

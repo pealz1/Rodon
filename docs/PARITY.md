@@ -1,76 +1,29 @@
-# Parity checklist: Evanovar RAM (Python) → Nova RAM (Rust)
+# Rodon feature map
 
-Every module of the Python code base (upstream `evanovar/RobloxAccountManager` at
-`e8b5169`) and where its behaviour lives now. "Removed" entries were removed on
-purpose. A short "Not yet ported" list at the bottom names the features that
-are not in the Rust version yet, so nothing is silently claimed.
+The reference is evanovar’s Python source at `8b37709`. This table connects upstream behavior to the Rust code that implements it. The last section describes differences that matter when migrating or testing. [Upstream snapshot](https://github.com/evanovar/RobloxAccountManager/tree/8b37709f7b47528a2a481082d743cb681174b003)
 
-| Python module | Status | Rust location / note |
-| :--- | :--- | :--- |
-| `classes/account_manager.py` | Ported | `src/store/vault.rs` (load/modify/save under a cross-process lock, `.bak` recovery, encryption switching), `src/core/accounts.rs` |
-| `classes/encryption.py` | Ported + replaced | New vaults use Windows DPAPI or Argon2id + AES-256-GCM (`src/store/crypto.rs`). The old hardware (WMI PBKDF2) and password formats are still read for migration (`src/import/evanovar.rs`). |
-| `classes/roblox_api.py` | Ported | `src/roblox/*` (auth ticket, CSRF, presence, users, games, share links, launch URL, launchers incl. Voidstrap) |
-| `classes/operation_result.py` | Ported | `src/error.rs` (`AppError` with code / title / message / detail / retryable) |
-| `features/account_actions.py` | Ported | launch flows → `src/core/launcher.rs`; anti-AFK → `src/services/anti_afk.rs`; multi Roblox → `src/win/multi.rs`; kill all → `src/win/process.rs`; user:pass and JS login → `src/browser/login.rs` |
-| `features/account_backup.py` | Ported | `src/import/backup.rs` (new format) and `src/import/evanovar.rs` (reads old backups) |
-| `features/account_creator.py` | **Not yet ported** | Browser-driven account creation is not implemented in the Rust version yet. See "Not yet ported" below. |
-| `features/account_filter.py` | Ported | account filtering (inline in `src/ui/mod.rs::visible_accounts` and `src/api`) |
-| `features/account_order.py` | Ported | `src/core/accounts.rs::move_account` |
-| `features/auto_rejoin.py` | Ported | `src/services/auto_rejoin.rs` |
-| `features/avatars.py` | Ported | `src/services/avatars.rs` |
-| `features/browsers.py` | **Not yet ported** | Browser discovery/automation for username+password sign-in is not implemented yet. Cookie import and cross-device Quick Sign-in cover adding accounts. |
-| `features/chromium.py` | **Not yet ported** | Portable Chromium download is tied to browser sign-in, which is not ported yet. |
-| `features/color_themes.py`, `features/themes.py` | Replaced | `src/ui/theme.rs` (light/dark/system, accent colour, density) |
-| `features/cookie_validator.py` | Ported | `src/services/cookie_check.rs` |
-| `features/diagnostics.py` | Ported | `src/logging.rs` (session + crash logs, secret redaction, retention) |
-| `features/favorites.py` | Ported | favourites in the vault (`src/store/model.rs`, `src/core/accounts.rs`) |
-| `features/game_selector.py` | Ported | `src/roblox/games.rs` + game picker in the launch bar |
-| `features/groups.py` | Ported | groups live in the vault (`src/core/accounts.rs`) |
-| `features/handle64_trust.py` | Replaced | Handle mode closes the singleton handles in-process (`src/win/handles.rs`). No external `handle64.exe` is downloaded or run, so the signature check is no longer needed. |
-| `features/headless_manager.py` | Ported | `src/services/instances.rs` (Instances page: hide/show/kill/rename per client) |
-| `features/launch_monitor.py` | Ported | `src/core/launcher.rs` (sequential batch launch with the inter-launch delay; in handle mode it waits for each client before the next) |
-| `features/presence.py` | Ported | `src/win/process.rs`, `src/roblox/logs.rs`, `src/services/activity.rs` |
-| `features/private_servers.py` | Ported + extended | `src/roblox/private_servers.rs`, Private Servers page |
-| `features/roblox_downloader.py` | **Not yet ported** | Downloading a Roblox Player deployment is not implemented yet. |
-| `features/roblox_settings.py` | Partial | The preset fields (framerate cap, volume, quality, auto-apply) are applied to `GlobalBasicSettings_13.xml` before launch (`src/services/roblox_settings.rs`). The searchable advanced editor is not ported yet. |
-| `features/settings_store.py` | Ported | `src/store/settings.rs` |
-| `features/updater.py` | Rewritten | `src/services/updater.rs` (fork releases only, SHA-256 verified, channel, rollback) |
-| `features/websocket_server.py` | Replaced | Local REST API (`src/api/http.rs`) + MCP server (`src/api/mcp.rs`). Same protections: loopback only, token auth, browser origins refused, auth-failure lockout. |
-| `features/window_grid.py` | Ported + fixed | `src/win/grid.rs`, includes the fix for upstream issue #79 / PR #82 |
-| `features/window_log_probe.py`, `features/window_renamer.py` | Ported | `src/services/renamer.rs` |
-| `features/window_operations.py` | Ported | `src/win/window.rs` |
-| `features/windows_startup.py` | Ported | `src/win/startup.rs` |
-| `utils/app_paths.py` | Ported | `src/paths.rs` (`--data-dir`, `NOVA_DATA_DIR`) |
-| `utils/atomic_io.py` | Ported | `src/store/atomic.rs` |
-| `utils/splash.py`, `utils/motion.py`, `utils/icons.py` | Replaced | egui renders instantly; no splash needed. Icons from Phosphor. |
-| `utils/ui.py` Console tab | **Removed (requested)** | Logs still go to `NovaData/logs`; Settings → Diagnostics opens the folder. |
-| `utils/ui.py` Donations tab | **Removed (requested)** | |
-| `utils/ui.py` everything else | Rewritten | `src/ui/*` |
-| Discord webhooks | Not ported | Upstream already removed them (`main.py` deletes the old setting). |
-| Background image/video theme | Not ported | Replaced by the new theme system. |
-| Detachable pages | Not ported | Pages are reachable from the sidebar and the command palette instead. |
+| Upstream area | Rodon implementation |
+| --- | --- |
+| Account manager, encryption, operation results | `src/store`, `src/core/accounts.rs` and `src/error.rs` implement vault locking, atomic saves, recovery and Windows or passphrase protection. |
+| Account backup and migration | `src/import` reads portable backups and earlier managers’ formats. `src/core/accounts.rs` implements merging, overwrite choices and per-account changes. |
+| Account order, filters, groups, notes, favorites and recents | `src/ui/pages/accounts.rs`, `src/ui/games.rs` and `src/store/model.rs` handle account selection, ordering, grouping and saved launch destinations. |
+| Browsers, Chromium and account creator | `src/browser`, `src/ui/pages/add_account.rs` and `src/ui/signup.rs` implement browser selection, portable Chromium, Quick Sign-in and registration drafts. |
+| Roblox API, cookie validation, presence, avatars and subscription status | `src/roblox` and `src/services` resolve account details, check sessions, fetch game presence and cache avatars and subscription badges. |
+| Account actions and launch monitor | `src/core/launcher.rs`, `src/roblox/launch.rs` and `src/roblox/logs.rs` implement launch targets, launcher choice, tracker matching and pause-on-mismatch behavior. |
+| Game selector and private servers | `src/ui/games.rs`, `src/ui/pages/servers.rs` and `src/ui/pages/private_servers.rs` handle discovery, public server pages, server history, owned servers and link renewal. |
+| Multi Roblox, headless windows, process and window operations | `src/win` and `src/services/instances.rs` manage instance coordination, visibility, process controls and memory trimming. Singleton handle support uses Windows APIs. |
+| Auto-Rejoin and Anti-AFK | `src/services/auto_rejoin.rs` and `src/services/anti_afk.rs` handle per-account destinations, retry limits, connection checks and scheduled input. |
+| Window grid, log probe, renamer and startup | `src/win/grid.rs`, `src/win/hotkey.rs`, `src/services/activity.rs`, `src/services/renamer.rs` and `src/win/startup.rs` handle layout, global hotkeys, client identification, titles and shortcuts. |
+| Player downloader, Roblox settings and installer handling | `src/services/downloader.rs`, `src/services/roblox_settings.rs`, `src/services/installers.rs` and `src/ui/pages/roblox_settings.rs` handle packages, staged XML edits, backups and reversible installer moves. |
+| Color themes, theme library, media, styles and editor | `src/themes.rs`, `assets/themes.json` and `src/ui/{theme,theme_editor,background,video}.rs` implement the eight upstream presets, derived colors, named copies, portable themes and media decoding. |
+| Desktop pages, icons, motion, splash, Console and Donations | `src/ui` implements the native sidebar, detached viewports, tray menu, splash, transitions, log viewer and links to evanovar’s donation page. |
+| Diagnostics, app paths, settings, atomic I/O and updates | `src/logging.rs`, `src/paths.rs`, `src/store` and `src/services/updater.rs` handle local diagnostics, profile locations, persistence and checksummed updates from Rodon releases. |
+| WebSocket server | `src/api/websocket.rs` handles Ping, AccountList, GetStatus, Launch, JoinUser, AutoRejoin and locally reviewed Add requests. `src/api/http.rs` and `src/api/mcp.rs` expose the Rodon command set. |
 
-## Upstream issues and pull requests
+## Migration and verification
 
-| Upstream | Where it is handled |
-| :--- | :--- |
-| Issue #79, PR #82: Window Grid clips windows behind the taskbar | `src/win/grid.rs`: uses the monitor work area, measures window borders, keeps 16:9 client areas, drops a column when Roblox enforces a minimum width, stacks rows only when needed |
-| Issue #80, PR #81: unreliable Windows builds | Single static Rust executable (`+crt-static`), no bundled DLLs, CI smoke-tests `--version` |
-
-## Not yet ported
-
-These Python features are not in the Rust version yet. They are tracked here so
-nothing is silently assumed present:
-
-- **Username + password sign-in through a browser** (`browsers.py`,
-  `account_creator.py`, `chromium.py`). Accounts are added by cookie import or by
-  cross-device **Quick Sign-in** instead. The Add dialog's "User : Pass" tab is a
-  placeholder.
-- **Account Creator** (bulk account creation). Deliberately not expanded; not ported.
-- **Portable Chromium download** (only needed for the browser flows above).
-- **Roblox Downloader** (fetching a Roblox Player deployment).
-- **Advanced Roblox settings editor** (searchable `GlobalBasicSettings_13.xml`
-  editor). The basic presets (framerate cap, master volume, start quality) are applied
-  before launch. Only the full searchable advanced `GlobalBasicSettings_13.xml` editor is pending.
-
-Everything else in the table above is implemented.
+- Browser sign-in requires approval on Roblox. The two agreed exclusions are bulk username/password login attempts and execution of supplied JavaScript on the Roblox login page. Registration drafts must be completed individually on the Roblox website.
+- Use a portable password backup to transfer an Evanovar hardware-bound vault. Rodon writes its own encrypted backup format and also reads Evanovar backups.
+- New profiles reserve port `7963` for WebSocket clients and `7964` for HTTP. Both listeners are opt-in. Existing profiles keep their configured ports. A WebSocket `Add` request requires review in the open desktop app.
+- Windows Media Foundation supplies video codecs. Format support depends on the codecs installed on the machine.
+- Unit and integration tests cover local behavior with fixtures. The Windows GUI smoke test visits each page and a detached console. Signed-in launches, private servers, multiple active Roblox accounts and extended gameplay need separate live verification.

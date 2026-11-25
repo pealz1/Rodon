@@ -30,6 +30,34 @@ fn filetime_to_u64(ft: FILETIME) -> u64 {
     ((ft.dwHighDateTime as u64) << 32) | ft.dwLowDateTime as u64
 }
 
+/// Ask Windows which process still holds this file. Query only, without requesting a restart.
+pub fn file_owners(path: &std::path::Path) -> Vec<ProcId> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::System::RestartManager::*;
+    let wide: Vec<_> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut key = [0u16; 33];
+    let mut session = 0;
+    let mut owners = Vec::new();
+    // SAFETY: all buffers live through the calls. A successfully opened session is always ended.
+    unsafe {
+        if RmStartSession(&mut session, 0, key.as_mut_ptr()) != 0 {
+            return owners;
+        }
+        if RmRegisterResources(session, 1, &wide.as_ptr(), 0, std::ptr::null(), 0, std::ptr::null()) == 0 {
+            let mut info = [RM_PROCESS_INFO::default(); 16];
+            let mut count = info.len() as u32;
+            let (mut needed, mut reasons) = (0, 0);
+            if RmGetList(session, &mut needed, &mut count, info.as_mut_ptr(), &mut reasons) == 0 {
+                for app in info.iter().take(count as usize) {
+                    owners.push(ProcId { pid: app.Process.dwProcessId, created: filetime_to_u64(app.Process.ProcessStartTime) });
+                }
+            }
+        }
+        RmEndSession(session);
+    }
+    owners
+}
+
 /// Lists running Roblox client processes.
 #[cfg(windows)]
 pub fn list_roblox() -> Vec<RobloxProcess> {
@@ -70,7 +98,7 @@ pub fn list_roblox() -> Vec<RobloxProcess> {
 }
 
 #[cfg(windows)]
-fn creation_time(pid: u32) -> Option<u64> {
+fn process_times(pid: u32) -> Option<(u64, u64)> {
     use windows_sys::Win32::System::Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
     // SAFETY: handle is closed before returning; times are plain out-params.
     unsafe {
@@ -84,10 +112,17 @@ fn creation_time(pid: u32) -> Option<u64> {
         let mut user = creation;
         let ok = GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user);
         CloseHandle(handle);
-        (ok != 0).then(|| filetime_to_u64(creation))
+        (ok != 0).then(|| (filetime_to_u64(creation), filetime_to_u64(kernel) + filetime_to_u64(user)))
     }
 }
 
+#[cfg(windows)]
+fn creation_time(pid: u32) -> Option<u64> {
+    process_times(pid).map(|v| v.0)
+}
+pub fn cpu_ticks(id: ProcId) -> Option<u64> {
+    process_times(id.pid).filter(|p| p.0 == id.created).map(|p| p.1)
+}
 #[cfg(windows)]
 pub fn is_alive(id: ProcId) -> bool {
     creation_time(id.pid).is_some_and(|created| id.created == 0 || created == id.created)
@@ -124,21 +159,21 @@ pub fn memory_mb(_pid: u32) -> Option<f64> {
 
 /// Trims a process's working set toward `target_mb` (RAM optimisation).
 #[cfg(windows)]
-pub fn trim_working_set(pid: u32, target_mb: u32) {
-    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA};
-    // SetProcessWorkingSetSizeEx lives in kernel32.
-    unsafe extern "system" {
-        fn SetProcessWorkingSetSizeEx(h: *mut core::ffi::c_void, min: usize, max: usize, flags: u32) -> i32;
-    }
-    let bytes = (target_mb as usize).saturating_mul(1024 * 1024);
-    // SAFETY: handle is closed after the call; sizes are plain integers.
+pub fn trim_working_set(pid: u32, _target_mb: u32) {
+    use windows_sys::Win32::{
+        Foundation::CloseHandle,
+        System::{
+            ProcessStatus::EmptyWorkingSet,
+            Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_SET_QUOTA},
+        },
+    };
+    // EmptyWorkingSet requests reclamation without changing the process's configured limits.
     unsafe {
-        let handle = OpenProcess(PROCESS_SET_QUOTA | PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if handle.is_null() {
-            return;
+        let handle = OpenProcess(PROCESS_SET_QUOTA | PROCESS_QUERY_INFORMATION, 0, pid);
+        if !handle.is_null() {
+            EmptyWorkingSet(handle);
+            CloseHandle(handle);
         }
-        SetProcessWorkingSetSizeEx(handle, bytes, bytes, 0);
-        CloseHandle(handle);
     }
 }
 
@@ -148,18 +183,35 @@ pub fn trim_working_set(_pid: u32, _target_mb: u32) {}
 /// Terminates a process if it still matches `id`. Returns true once it is gone.
 #[cfg(windows)]
 pub fn kill(id: ProcId) -> bool {
-    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE};
-    if !is_alive(id) {
-        return true;
+    use windows_sys::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE, QueryFullProcessImageNameW, TerminateProcess,
+    };
+    if id.created == 0 {
+        return false;
     }
-    // SAFETY: handle is closed immediately after TerminateProcess.
+    // Validate creation time and image on the same handle used for termination, including when Windows reuses a PID.
     unsafe {
-        let handle = OpenProcess(PROCESS_TERMINATE, 0, id.pid);
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE, 0, id.pid);
         if handle.is_null() {
             return !is_alive(id);
         }
-        windows_sys::Win32::System::Threading::TerminateProcess(handle, 1);
+        let mut created: FILETIME = std::mem::zeroed();
+        let mut exit = created;
+        let mut kernel = created;
+        let mut user = created;
+        let mut image = vec![0u16; 32768];
+        let mut size = image.len() as u32;
+        let matches = GetProcessTimes(handle, &mut created, &mut exit, &mut kernel, &mut user) != 0
+            && filetime_to_u64(created) == id.created
+            && QueryFullProcessImageNameW(handle, 0, image.as_mut_ptr(), &mut size) != 0
+            && std::path::Path::new(&String::from_utf16_lossy(&image[..size as usize]))
+                .file_name()
+                .is_some_and(|name| name.eq_ignore_ascii_case(ROBLOX_EXE));
+        let terminated = matches && TerminateProcess(handle, 1) != 0;
         CloseHandle(handle);
+        if !terminated {
+            return !is_alive(id);
+        }
     }
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline {

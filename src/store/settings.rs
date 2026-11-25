@@ -90,11 +90,12 @@ pub struct AntiAfk {
     pub press_count: u32,
     pub interval_minutes: u32,
     pub show_countdown: bool,
+    pub countdown_size: u16,
 }
 
 impl Default for AntiAfk {
     fn default() -> Self {
-        Self { enabled: false, action: "w".into(), press_count: 1, interval_minutes: 10, show_countdown: true }
+        Self { enabled: false, action: "w".into(), press_count: 1, interval_minutes: 10, show_countdown: true, countdown_size: 14 }
     }
 }
 
@@ -131,6 +132,9 @@ impl Default for RobloxPresets {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    pub appearance: Option<crate::themes::Theme>,
+    pub saved_themes: Vec<crate::themes::Theme>,
+
     // Appearance
     pub theme: ThemeMode,
     pub accent: String,
@@ -140,6 +144,10 @@ pub struct Settings {
 
     // Window and app
     pub always_on_top: bool,
+    pub window_size: [f32; 2],
+    pub animations: bool,
+    pub splash: bool,
+    pub multi_select: bool,
     pub close_to_tray: bool,
     pub start_with_windows: bool,
     pub start_menu_shortcut: bool,
@@ -198,6 +206,9 @@ pub struct Settings {
 
     // Local API / MCP
     pub api_enabled: bool,
+    pub websocket_enabled: bool,
+    pub websocket_port: u16,
+    pub websocket_auth: bool,
     pub api_port: u16,
     pub api_expose_secrets: bool,
     pub api_allowed_origins: Vec<String>,
@@ -210,12 +221,18 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            appearance: None,
+            saved_themes: Vec::new(),
             theme: ThemeMode::Dark,
             accent: "#5B8CFF".into(),
             ui_scale: 1.0,
             compact_rows: false,
             show_avatars: true,
             always_on_top: false,
+            window_size: [1060.0, 680.0],
+            animations: true,
+            splash: true,
+            multi_select: true,
             close_to_tray: false,
             start_with_windows: false,
             start_menu_shortcut: false,
@@ -258,8 +275,11 @@ impl Default for Settings {
             downloader_folder: String::new(),
             downloader_version: "LIVE".into(),
             downloader_customizations: false,
-            api_enabled: true,
-            api_port: 7963,
+            api_enabled: false,
+            websocket_enabled: false,
+            websocket_port: 7963,
+            websocket_auth: true,
+            api_port: 7964,
             api_expose_secrets: false,
             api_allowed_origins: Vec::new(),
             api_max_auth_failures: 10,
@@ -294,6 +314,7 @@ impl Settings {
 
     /// Clamps values that came from a hand-edited file.
     pub fn sanitized(mut self) -> Settings {
+        self.window_size = [clamp_f(self.window_size[0], 820.0, 8192.0, 1060.0), clamp_f(self.window_size[1], 540.0, 8192.0, 680.0)];
         self.ui_scale = clamp_f(self.ui_scale, 0.75, 2.0, 1.0);
         self.launch_delay_secs = clamp_f(self.launch_delay_secs, 0.0, 300.0, 0.5);
         self.cookie_validation_delay_secs = clamp_f(self.cookie_validation_delay_secs, 0.5, 60.0, 1.5);
@@ -303,9 +324,12 @@ impl Settings {
         self.ram_limit_mb = self.ram_limit_mb.clamp(100, 16_384);
         self.anti_afk.press_count = self.anti_afk.press_count.clamp(1, 20);
         self.anti_afk.interval_minutes = self.anti_afk.interval_minutes.clamp(1, 19);
-        self.log_retention = self.log_retention.clamp(1, 500);
+        self.log_retention = self.log_retention.min(500);
+        if self.websocket_port < 1024 {
+            self.websocket_port = Self::default().websocket_port;
+        }
         if self.api_port < 1024 {
-            self.api_port = 7963;
+            self.api_port = Self::default().api_port;
         }
         self
     }
@@ -324,7 +348,7 @@ mod tests {
         let parsed: Settings = serde_json::from_str(r#"{"launch_delay_secs": 9999, "api_port": 5}"#).unwrap();
         let s = parsed.sanitized();
         assert_eq!(s.launch_delay_secs, 300.0);
-        assert_eq!(s.api_port, 7963);
+        assert_eq!(s.api_port, Settings::default().api_port);
         assert_eq!(s.window_grid_hotkey, "Ctrl+Shift+A");
     }
 

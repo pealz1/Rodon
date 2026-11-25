@@ -43,6 +43,15 @@ impl Core {
                 format!("{}'s cookie is invalid. Re-add the account.", account.label()),
             ));
         }
+        let guard = self.multi_guard();
+        let mut gate = guard.as_ref().map(|g| g.launch_gate.lock().unwrap_or_else(|p| p.into_inner()));
+        if gate.as_ref().is_some_and(|paused| **paused) {
+            return Err(AppError::new(
+                "LAUNCH_PAUSED",
+                "Multi Roblox paused",
+                "Close affected clients, resolve verification on Roblox, then restart Multi Roblox.",
+            ));
+        }
         let settings = self.settings();
         // Apply the basic Roblox settings presets before the client starts. Best-effort:
         // a problem here is logged but does not block the launch.
@@ -50,6 +59,12 @@ impl Core {
             crate::log_warn!("Could not apply Roblox settings presets: {err}");
         }
         let launched = launch::launch(&account.cookie, request, settings.launcher, &settings.custom_launcher_path)?;
+        if let Some(paused) = gate.as_mut()
+            && let Err(err) = crate::roblox::logs::confirm_launch(&launched, account.user_id)
+        {
+            **paused = true;
+            return Err(err);
+        }
         // Launching proves the cookie worked.
         let _ = self.edit(|data| {
             if let Some(acc) = data.find_mut(reference) {
@@ -127,12 +142,17 @@ impl Core {
             .first()
             .and_then(|r| self.account(r))
             .ok_or_else(|| AppError::invalid("NO_ACCOUNT", "Select an account to join with."))?;
+        let request = self.resolve_join_user(&first.cookie, target)?;
+        Ok(self.launch_batch(references, &request))
+    }
+
+    pub fn resolve_join_user(&self, cookie: &str, target: &str) -> AppResult<LaunchRequest> {
         let target_id = if target.chars().all(|c| c.is_ascii_digit()) {
             target.parse().map_err(|_| AppError::invalid("TARGET_INVALID", "Enter a username or user id."))?
         } else {
             api::user_id_from_username(target)?
         };
-        let presence = api::presence(target_id, &first.cookie)?;
+        let presence = api::presence(target_id, cookie)?;
         if !presence.in_game {
             return Err(AppError::new("TARGET_NOT_IN_GAME", "User Not In A Game", format!("{target} is not in a game right now.")));
         }
@@ -143,8 +163,7 @@ impl Core {
                 format!("{target}'s game cannot be joined (their join setting is restricted)."),
             )
         })?;
-        let request = LaunchRequest { place_id: place_id.to_string(), job_id: presence.job_id, ..Default::default() };
-        Ok(self.launch_batch(references, &request))
+        Ok(LaunchRequest { place_id: place_id.to_string(), job_id: presence.job_id, ..Default::default() })
     }
 
     /// Joins the public server with the fewest players.

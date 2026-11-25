@@ -17,10 +17,8 @@ pub enum Msg {
     GameName(u64, String),
     /// Private servers loaded for the Private Servers page.
     PrivateServers(crate::error::AppResult<Vec<crate::store::model::SavedPrivateServer>>),
-    /// A quick sign-in produced a code to display, or finished.
-    QuickLogin(QuickLoginMsg),
     /// An arbitrary UI callback to run on the main thread.
-    Run(Box<dyn FnOnce(&mut super::NovaApp) + Send>),
+    Run(Box<dyn FnOnce(&mut super::RodonApp) + Send>),
 }
 
 pub enum QuickLoginMsg {
@@ -58,6 +56,10 @@ pub struct TaskSender {
 }
 
 impl TaskSender {
+    pub(super) fn context(&self) -> &egui::Context {
+        &self.ctx
+    }
+
     pub fn post(&self, msg: Msg) {
         let _ = self.tx.send(msg);
         self.ctx.request_repaint();

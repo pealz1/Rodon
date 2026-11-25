@@ -28,27 +28,34 @@ impl RejoinManager {
 
     pub fn start(self: &Arc<Self>, services: &Arc<Services>, config: RejoinConfig) {
         let account = config.account.clone();
-        if account.is_empty() || self.is_running(&account) {
+        if account.is_empty() {
             return;
         }
         let stop = Arc::new(AtomicBool::new(false));
-        self.workers.lock().unwrap_or_else(|p| p.into_inner()).insert(account.clone(), Arc::clone(&stop));
+        {
+            let mut workers = self.workers.lock().unwrap_or_else(|p| p.into_inner());
+            if workers.contains_key(&account) {
+                return;
+            }
+            workers.insert(account.clone(), stop.clone());
+        }
         let core = Arc::clone(&services.core);
         let live = Arc::clone(&services.live);
         let services = Arc::clone(services);
         let manager = Arc::clone(self);
-        std::thread::Builder::new()
-            .name(format!("auto-rejoin-{account}"))
-            .spawn(move || {
-                run(&core, &stop, &config, |status| {
-                    live.set_rejoin_status(&config.account, status);
-                    services.request_repaint();
-                });
-                live.clear_rejoin_status(&config.account);
-                manager.workers.lock().unwrap_or_else(|p| p.into_inner()).remove(&config.account);
+        let worker = std::thread::Builder::new().name(format!("auto-rejoin-{account}")).spawn(move || {
+            run(&core, &stop, &config, |status| {
+                live.set_rejoin_status(&config.account, status);
                 services.request_repaint();
-            })
-            .ok();
+            });
+            live.clear_rejoin_status(&config.account);
+            manager.workers.lock().unwrap_or_else(|p| p.into_inner()).remove(&config.account);
+            services.request_repaint();
+        });
+        if let Err(e) = worker {
+            self.workers.lock().unwrap_or_else(|p| p.into_inner()).remove(&account);
+            crate::log_error!("Could not start Auto-Rejoin: {e}");
+        }
     }
 
     pub fn stop(&self, account: &str) {
@@ -69,7 +76,7 @@ fn run(core: &Core, stop: &AtomicBool, config: &RejoinConfig, mut status: impl F
         status("Account not found");
         return;
     };
-    if config.place_id == 0 {
+    if config.place_id == 0 && config.target_user.trim().is_empty() {
         status("No place set");
         return;
     }
@@ -89,7 +96,30 @@ fn run(core: &Core, stop: &AtomicBool, config: &RejoinConfig, mut status: impl F
 
     status(&format!("Active — place {}", config.place_id));
     while !stop.load(Ordering::SeqCst) {
-        let present = account_is_present(core, &account, config);
+        let destination = if config.target_user.trim().is_empty() {
+            Some(request.clone())
+        } else {
+            match core.resolve_join_user(&account.cookie, config.target_user.trim()) {
+                Ok(r) => Some(r),
+                Err(err) => {
+                    status(&format!("Waiting for {}: {}", config.target_user, err.message));
+                    None
+                }
+            }
+        };
+        let Some(destination) = destination else {
+            if interruptible_sleep(stop, interval) {
+                return;
+            }
+            continue;
+        };
+        let Some(present) = account_is_present(&account, config, &destination) else {
+            status("Presence unavailable");
+            if interruptible_sleep(stop, interval) {
+                return;
+            }
+            continue;
+        };
         if present {
             retries = 0;
             consecutive_absent = 0;
@@ -101,12 +131,23 @@ fn run(core: &Core, stop: &AtomicBool, config: &RejoinConfig, mut status: impl F
                     status("Stopped — max retries");
                     return;
                 }
-                retries += 1;
-                status(&format!("Rejoining ({retries}/{})", config.max_retries));
+
                 if config.check_internet && !has_internet(core) {
                     status("Waiting for internet");
                 } else {
-                    match core.launch(&config.account, &request) {
+                    retries += 1;
+                    status(&format!("Rejoining ({retries}/{})", config.max_retries));
+                    if config.check_presence
+                        && let Some(stale) = crate::roblox::logs::confirmed_client(account.user_id)
+                        && !crate::win::process::kill(stale)
+                    {
+                        status("Waiting for the previous client to close");
+                        if interruptible_sleep(stop, interval) {
+                            return;
+                        }
+                        continue;
+                    }
+                    match core.launch(&config.account, &destination) {
                         Ok(_) => {
                             status(&format!("Active — place {}", config.place_id));
                             consecutive_absent = 0;
@@ -115,7 +156,15 @@ fn run(core: &Core, stop: &AtomicBool, config: &RejoinConfig, mut status: impl F
                                 return;
                             }
                         }
-                        Err(err) => status(&format!("Launch failed: {}", err.message)),
+                        Err(err) => {
+                            status(&format!("Launch failed: {}", err.message));
+                            if matches!(
+                                err.code.as_str(),
+                                "LAUNCH_PAUSED" | "ROBLOX_ACCOUNT_MISMATCH" | "ROBLOX_SECURITY_CHALLENGE" | "ROBLOX_LAUNCH_UNCONFIRMED"
+                            ) {
+                                return;
+                            }
+                        }
                     }
                 }
             }
@@ -126,24 +175,22 @@ fn run(core: &Core, stop: &AtomicBool, config: &RejoinConfig, mut status: impl F
     }
 }
 
-fn account_is_present(core: &Core, account: &crate::store::model::Account, config: &RejoinConfig) -> bool {
-    // Presence API is authoritative when we have a user id and cookie.
-    if config.check_presence
-        && account.user_id > 0
-        && !account.cookie.is_empty()
-        && let Ok(presence) = api::presence(account.user_id, &account.cookie)
-    {
-        if !presence.online {
-            return false;
+fn account_is_present(account: &crate::store::model::Account, config: &RejoinConfig, destination: &LaunchRequest) -> Option<bool> {
+    if config.check_presence && account.user_id > 0 && !account.cookie.is_empty() {
+        let p = api::presence(account.user_id, &account.cookie).ok()?;
+        if !p.in_game {
+            return Some(false);
+        }
+        if !config.target_user.is_empty() && !destination.job_id.is_empty() {
+            return Some(p.job_id == destination.job_id);
         }
         if config.check_place_id {
-            return presence.place_id == Some(config.place_id) || presence.root_place_id == Some(config.place_id);
+            let expected = destination.place_id.parse().ok()?;
+            return Some(p.place_id == Some(expected) || p.root_place_id == Some(expected));
         }
-        return presence.in_game;
+        return Some(true);
     }
-    // Fall back to "is any client running for this account".
-    let _ = core;
-    super::activity::match_processes().values().any(|uid| *uid == account.user_id)
+    Some(super::activity::match_processes().values().any(|uid| *uid == account.user_id))
 }
 
 fn has_internet(core: &Core) -> bool {

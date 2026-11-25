@@ -3,11 +3,11 @@
 
 use crate::roblox::launch::LaunchRequest;
 use crate::store::model::ServerVisit;
-use crate::ui::NovaApp;
+use crate::ui::RodonApp;
 use crate::ui::widgets;
 use eframe::egui::{self, RichText};
 
-impl NovaApp {
+impl RodonApp {
     pub(in crate::ui) fn page_servers(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label(RichText::new("Servers").size(22.0).strong().color(self.palette.text));

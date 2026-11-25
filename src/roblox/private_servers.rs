@@ -9,7 +9,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 static VIP_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"roblox\.com/games/(\d+)/[^?#]*\?[^#]*privateServerLinkCode=([A-Za-z0-9]+)").unwrap());
+    LazyLock::new(|| Regex::new(r"roblox\.com/games/(\d+)(?:/[^?#]*)?\?[^#]*privateServerLinkCode=([A-Za-z0-9]+)").unwrap());
 static SHARE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"roblox\.com/share[^?#]*[?&]code=([A-Za-z0-9]+)").unwrap());
 
 /// Turns a VIP URL, share URL or `games/<id>?privateServerLinkCode=` link into
@@ -107,6 +107,7 @@ fn build_record(id: u64, entry: &Value, detail: Option<&Value>, place_filter: Op
         .unwrap_or(0);
     SavedPrivateServer {
         id: id.to_string(),
+        active: detail.pointer("/subscription/active").or_else(|| entry.get("active")).and_then(Value::as_bool),
         vip_server_id: id,
         place_id,
         game_name: game

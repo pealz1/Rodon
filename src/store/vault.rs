@@ -151,6 +151,10 @@ impl Vault {
         Ok(Vault { path: live_path.to_path_buf(), key, data: Arc::new(data), stamp, revision: 1, using_backup })
     }
 
+    pub fn recovered(&self) -> bool {
+        self.using_backup
+    }
+
     pub fn protection(&self) -> Protection {
         match self.key {
             Key::None => Protection::None,
@@ -285,13 +289,13 @@ fn read_file(path: &Path) -> AppResult<VaultFile> {
     let bytes = fs::read(path).map_err(|e| AppError::io("Reading the vault", &e))?;
     let file: VaultFile = serde_json::from_slice(&bytes).map_err(|e| damaged(&e.to_string()))?;
     if file.format != FORMAT {
-        return Err(damaged("not a Nova vault"));
+        return Err(damaged("not a Rodon vault"));
     }
     if file.version > VERSION {
         return Err(AppError::new(
             "VAULT_TOO_NEW",
             "Vault From A Newer Version",
-            "This vault was saved by a newer Nova RAM. Update the app to open it.",
+            "This vault was saved by a newer Rodon. Update the app to open it.",
         ));
     }
     Ok(file)
@@ -373,7 +377,8 @@ mod tests {
         fs::write(dir.path().join(FILE_NAME), b"{garbage").unwrap();
         let recovered = Vault::open(dir.path(), None).unwrap();
         assert_eq!(recovered.cached().accounts.len(), 1);
-        assert!(!fs::read_to_string(dir.path().join(FILE_NAME)).unwrap().contains("u1"));
+        let envelope = read_file(&backup_path(&dir.path().join(FILE_NAME))).unwrap();
+        assert!(envelope.payload.is_none() && !envelope.data.is_empty());
     }
 
     #[test]
@@ -400,7 +405,8 @@ mod tests {
         assert_eq!(Vault::open(dir.path(), None).err().unwrap().code, "VAULT_LOCKED");
         assert_eq!(Vault::open(dir.path(), Some("nope")).err().unwrap().code, "PASSWORD_INVALID");
         assert_eq!(Vault::open(dir.path(), Some("hunter22")).unwrap().cached().accounts.len(), 1);
-        assert!(!fs::read_to_string(dir.path().join(FILE_NAME)).unwrap().contains("u5"));
+        let envelope = read_file(&dir.path().join(FILE_NAME)).unwrap();
+        assert!(envelope.payload.is_none() && !envelope.data.is_empty());
     }
 
     #[test]

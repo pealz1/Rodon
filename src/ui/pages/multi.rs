@@ -1,11 +1,11 @@
 //! The Multi Roblox page: enable multiple clients and manage running instances.
 
 use crate::store::settings::MultiMethod;
-use crate::ui::NovaApp;
+use crate::ui::RodonApp;
 use crate::ui::widgets;
 use eframe::egui::{self, RichText};
 
-impl NovaApp {
+impl RodonApp {
     pub(in crate::ui) fn page_multi(&mut self, ui: &mut egui::Ui) {
         let palette = self.palette;
         ui.label(RichText::new("Multi Roblox").size(22.0).strong().color(self.palette.text));
@@ -30,7 +30,7 @@ impl NovaApp {
                 }
             });
 
-            widgets::setting_row(ui, &palette, "Method", "Mutex works with no admin; Handle works with clients already open", |ui| {
+            widgets::setting_row(ui, &palette, "Method", "Close all Roblox clients before enabling either method", |ui| {
                 egui::ComboBox::from_id_salt("multi-method")
                     .selected_text(match settings.multi_method {
                         MultiMethod::Mutex => "Mutex (default)",
@@ -47,12 +47,7 @@ impl NovaApp {
                     });
             });
 
-            widgets::setting_row(ui, &palette, "Error 773 fix", "Lock RobloxCookies.dat while multi-instance is on (Mutex mode)", |ui| {
-                if ui.add(egui::Checkbox::without_text(&mut settings.cookie_lock_773)).changed() {
-                    let v = settings.cookie_lock_773;
-                    let _ = self.core.edit_settings(move |s| s.cookie_lock_773 = v);
-                }
-            });
+            ui.small("Both modes protect the shared Roblox login files.");
         });
 
         ui.add_space(14.0);

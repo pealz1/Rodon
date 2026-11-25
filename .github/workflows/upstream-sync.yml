@@ -1,6 +1,6 @@
 name: Upstream sync watch
 
-# Nova RAM is a full-language rewrite, so upstream changes cannot be merged as
+# Rodon is a full-language rewrite, so upstream changes cannot be merged as
 # diffs. This job lists new commits on evanovar/RobloxAccountManager since the
 # watermark in .github/upstream-last-ported.txt and opens (or updates) a tracking
 # issue so nothing is silently missed. Advance the watermark when you port them.

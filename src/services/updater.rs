@@ -55,6 +55,9 @@ fn host_of(url: &str) -> &str {
 }
 
 fn trusted(url: &str) -> bool {
+    if !url.starts_with("https://") {
+        return false;
+    }
     let host = host_of(url);
     TRUSTED_HOSTS.iter().any(|h| host == *h || host.ends_with(&format!(".{h}")))
 }
@@ -69,22 +72,22 @@ pub fn check(beta: bool) -> AppResult<Option<UpdateInfo>> {
         return Err(AppError::new("UPDATE_CHECK_FAILED", "Update Check Failed", "GitHub did not return the releases.").retryable());
     }
     let releases: Vec<Release> = response.body_mut().read_json().map_err(|e| AppError::unexpected("release list", e))?;
-    let chosen = releases.into_iter().find(|r| beta || !r.prerelease);
-    let Some(release) = chosen else { return Ok(None) };
-    if !is_newer(crate::VERSION, &release.tag) {
-        return Ok(None);
-    }
-    let exe = release.assets.iter().find(|a| a.name.ends_with(".exe"));
-    let sha = release.assets.iter().find(|a| a.name.ends_with(".sha256"));
-    match (exe, sha) {
-        (Some(exe), Some(sha)) if trusted(&exe.url) && trusted(&sha.url) => Ok(Some(UpdateInfo {
-            version: release.tag.trim_start_matches(['v', 'V']).to_owned(),
+    Ok(releases.into_iter().filter(|r| beta || !r.prerelease).find_map(|release| {
+        if !is_newer(crate::VERSION, &release.tag) {
+            return None;
+        }
+        let version = release.tag.trim_start_matches(['v', 'V']);
+        let asset = format!("Rodon-v{version}.exe");
+        let checksum = format!("{asset}.sha256");
+        let exe = release.assets.iter().find(|a| a.name == asset && trusted(&a.url))?;
+        let sha = release.assets.iter().find(|a| a.name == checksum && trusted(&a.url))?;
+        Some(UpdateInfo {
+            version: version.to_owned(),
             exe_url: exe.url.clone(),
             sha256_url: sha.url.clone(),
             notes: if release.body.is_empty() { release.name } else { release.body },
-        })),
-        _ => Ok(None),
-    }
+        })
+    }))
 }
 
 /// One-shot background check that records any available update for the UI.
@@ -97,6 +100,7 @@ pub fn start_check(services: &Arc<Services>) {
         if let Ok(Some(info)) = check(beta)
             && info.version != skipped
         {
+            *worker_services.live.update_notes.write().unwrap_or_else(|e| e.into_inner()) = info.notes;
             worker_services.live.set_update_available(Some(info.version));
             worker_services.request_repaint();
         }
@@ -119,7 +123,7 @@ fn download(url: &str, limit: usize) -> AppResult<Vec<u8>> {
 }
 
 /// Downloads the update, checks its SHA-256, and swaps the running exe. On Windows
-/// this writes a helper script that waits for exit, replaces the exe (keeping a
+/// a Rodon helper process waits for exit, replaces the exe (keeping a
 /// `.old` rollback copy) and relaunches. Returns once the helper has been started.
 pub fn download_and_apply(info: &UpdateInfo) -> AppResult<()> {
     use sha2::{Digest, Sha256};
@@ -143,34 +147,64 @@ pub fn download_and_apply(info: &UpdateInfo) -> AppResult<()> {
 }
 
 #[cfg(windows)]
-fn apply_swap(current: &std::path::Path, staged: &std::path::Path) -> AppResult<()> {
+fn apply_swap(current: &std::path::Path, _staged: &std::path::Path) -> AppResult<()> {
     use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let pid = std::process::id();
-    let old = current.with_extension("old");
-    let script = crate::paths::data_file("update.cmd");
-    let body = format!(
-        "@echo off\r\n\
-         :wait\r\n\
-         tasklist /FI \"PID eq {pid}\" | find \"{pid}\" >nul && (timeout /t 1 /nobreak >nul & goto wait)\r\n\
-         del \"{old}\" >nul 2>&1\r\n\
-         move /y \"{cur}\" \"{old}\" >nul\r\n\
-         move /y \"{new}\" \"{cur}\" >nul\r\n\
-         start \"\" \"{cur}\"\r\n\
-         del \"%~f0\" >nul 2>&1\r\n",
-        old = old.display(),
-        cur = current.display(),
-        new = staged.display(),
-    );
-    std::fs::write(&script, body).map_err(|e| AppError::io("Writing the update helper", &e))?;
-    std::process::Command::new("cmd")
-        .args(["/c", "start", "", "/min", &script.to_string_lossy()])
-        .creation_flags(CREATE_NO_WINDOW)
+    let helper = current.with_extension("rodon-update-helper.exe");
+    std::fs::copy(current, &helper).map_err(|e| AppError::io("Preparing update helper", &e))?;
+    std::process::Command::new(&helper)
+        .arg("--finish-rodon-update")
+        .arg(std::process::id().to_string())
+        .args(std::env::args_os().skip(1))
+        .creation_flags(0x08000000)
         .spawn()
-        .map_err(|e| {
-            AppError::new("UPDATE_LAUNCH_FAILED", "Update Failed", "The update helper could not start.").with_detail(e.to_string())
-        })?;
-    crate::log_info!("Update staged; exit the app to finish installing");
+        .map_err(|e| AppError::io("Starting update helper", &e))?;
+    Ok(())
+}
+
+pub fn finish_update(args: &[std::ffi::OsString]) -> std::io::Result<()> {
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, WAIT_TIMEOUT},
+        System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject},
+    };
+    let exe = std::env::current_exe()?;
+    let stem = exe
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .and_then(|s| s.strip_suffix(".rodon-update-helper"))
+        .ok_or_else(|| std::io::Error::other("Invalid update helper name"))?;
+    let pid = args
+        .first()
+        .and_then(|s| s.to_str())
+        .and_then(|s| s.parse::<u32>().ok())
+        .ok_or_else(|| std::io::Error::other("Missing process ID"))?;
+    // Wait only for the instance that staged this update.
+    unsafe {
+        let process = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
+        if !process.is_null() {
+            let wait = WaitForSingleObject(process, 600000);
+            CloseHandle(process);
+            if wait == WAIT_TIMEOUT {
+                return Err(std::io::Error::other("Timed out waiting for Rodon"));
+            }
+        }
+    }
+    let current = exe.with_file_name(format!("{stem}.exe"));
+    let staged = current.with_extension("new");
+    let old = current.with_extension("old");
+    if !staged.is_file() {
+        return Err(std::io::Error::other("Staged update is missing"));
+    }
+    std::fs::rename(&current, &old)?;
+    if let Err(e) = std::fs::rename(&staged, &current) {
+        std::fs::rename(&old, &current)?;
+        return Err(e);
+    }
+    if let Err(e) = std::process::Command::new(&current).args(&args[1..]).spawn() {
+        std::fs::rename(&current, &staged)?;
+        std::fs::rename(&old, &current)?;
+        std::process::Command::new(&current).args(&args[1..]).spawn()?;
+        return Err(e);
+    }
     Ok(())
 }
 
@@ -193,9 +227,9 @@ mod tests {
 
     #[test]
     fn only_github_hosts_are_trusted() {
-        assert!(trusted("https://github.com/x/y/releases/download/v1/NovaRAM.exe"));
+        assert!(trusted("https://github.com/x/y/releases/download/v1/Rodon.exe"));
         assert!(trusted("https://objects.githubusercontent.com/abc"));
-        assert!(!trusted("https://evil.example.com/NovaRAM.exe"));
+        assert!(!trusted("https://evil.example.com/Rodon.exe"));
         assert!(!trusted("https://github.com.evil.com/x"));
     }
 }

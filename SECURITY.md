@@ -1,10 +1,10 @@
 # Security Policy
 
-Nova RAM handles sensitive data: Roblox session cookies, optionally saved
+Rodon handles sensitive data: Roblox session cookies, optionally saved
 passwords, and notes. Please report vulnerabilities privately so they can be
 fixed before details are public.
 
-## How Nova RAM protects local data
+## How Rodon protects local data
 
 - Accounts live in an **encrypted vault** (`vault.json`): Windows DPAPI tied to
   your Windows account, or Argon2id + AES-256-GCM behind a password. "No
@@ -29,6 +29,6 @@ separately.
 ## Reporting a vulnerability
 
 Use GitHub's **Report a vulnerability** option on the repository's
-[Security page](https://github.com/pealz1/RobloxAccountManager/security/advisories/new).
+[Security page](https://github.com/pealz1/Rodon/security/advisories/new).
 Please include steps to reproduce and the impact. We aim to acknowledge reports
 quickly and will credit reporters who want it once a fix ships.

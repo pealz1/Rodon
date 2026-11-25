@@ -21,7 +21,8 @@ pub struct MultiGuard {
     #[cfg(windows)]
     mutexes: Vec<MutexHandle>,
     #[cfg(windows)]
-    cookie_lock: Option<CookieLock>,
+    _login_files: Vec<std::fs::File>,
+    pub(crate) launch_gate: Mutex<bool>,
     monitor_stop: Option<Arc<AtomicBool>>,
     monitor_ready: Arc<Mutex<std::collections::HashSet<super::process::ProcId>>>,
 }
@@ -37,15 +38,6 @@ struct MutexHandle {
 unsafe impl Send for MutexHandle {}
 #[cfg(windows)]
 unsafe impl Sync for MutexHandle {}
-
-#[cfg(windows)]
-struct CookieLock {
-    handle: windows_sys::Win32::Foundation::HANDLE,
-}
-#[cfg(windows)]
-unsafe impl Send for CookieLock {}
-#[cfg(windows)]
-unsafe impl Sync for CookieLock {}
 
 impl MultiGuard {
     pub fn mode(&self) -> MultiMethod {
@@ -77,9 +69,6 @@ impl Drop for MultiGuard {
                 }
                 CloseHandle(mutex.handle);
             }
-            if let Some(lock) = &self.cookie_lock {
-                CloseHandle(lock.handle);
-            }
         }
         crate::log_info!("Multi Roblox stopped");
     }
@@ -87,11 +76,34 @@ impl Drop for MultiGuard {
 
 /// Starts multi-instance support in the requested mode.
 #[cfg(windows)]
-pub fn enable(method: MultiMethod, cookie_lock_773: bool) -> AppResult<MultiGuard> {
-    match method {
-        MultiMethod::Mutex => enable_mutex(cookie_lock_773),
-        MultiMethod::Handle => enable_handle(),
+pub fn enable(method: MultiMethod, _legacy_lock_setting: bool) -> AppResult<MultiGuard> {
+    use std::os::windows::fs::OpenOptionsExt;
+    if !super::process::list_roblox().is_empty() {
+        return Err(AppError::new("ROBLOX_RUNNING", "Close Roblox first", "Close all Roblox clients before starting Multi Roblox."));
     }
+    let dir = crate::paths::local_appdata()
+        .ok_or_else(|| AppError::invalid("LOCALAPPDATA_MISSING", "Cannot locate Roblox storage."))?
+        .join("Roblox")
+        .join("LocalStorage");
+    std::fs::create_dir_all(&dir).map_err(|e| AppError::io("Opening Roblox storage", &e))?;
+    let mut files = Vec::new();
+    for name in ["RobloxCookies.dat", "appStorage.json"] {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .share_mode(0)
+            .open(dir.join(name))
+            .map_err(|e| AppError::io("Protecting shared Roblox login files", &e))?;
+        files.push(file);
+    }
+    let mut guard = match method {
+        MultiMethod::Mutex => enable_mutex(),
+        MultiMethod::Handle => enable_handle(),
+    }?;
+    guard._login_files = files;
+    Ok(guard)
 }
 
 #[cfg(not(windows))]
@@ -100,7 +112,7 @@ pub fn enable(_method: MultiMethod, _cookie_lock_773: bool) -> AppResult<MultiGu
 }
 
 #[cfg(windows)]
-fn enable_mutex(cookie_lock_773: bool) -> AppResult<MultiGuard> {
+fn enable_mutex() -> AppResult<MultiGuard> {
     use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError, SetLastError};
     use windows_sys::Win32::System::Threading::CreateMutexW;
 
@@ -130,12 +142,12 @@ fn enable_mutex(cookie_lock_773: bool) -> AppResult<MultiGuard> {
         return Err(AppError::new("MUTEX_FAILED", "Could Not Start", "No Roblox singleton mutex could be created."));
     }
 
-    let cookie_lock = if cookie_lock_773 { lock_cookies() } else { None };
     crate::log_info!("Multi Roblox started (mutex mode)");
     Ok(MultiGuard {
         mode: MultiMethod::Mutex,
         mutexes,
-        cookie_lock,
+        _login_files: Vec::new(),
+        launch_gate: Mutex::new(false),
         monitor_stop: None,
         monitor_ready: Arc::new(Mutex::new(std::collections::HashSet::new())),
     })
@@ -147,7 +159,7 @@ fn enable_handle() -> AppResult<MultiGuard> {
         return Err(AppError::new(
             "NEEDS_ADMIN",
             "Administrator Required",
-            "Handle mode needs Nova RAM to run as administrator. Restart it as admin or use Mutex mode.",
+            "Handle mode needs Rodon to run as administrator. Restart it as admin or use Mutex mode.",
         ));
     }
     let stop = Arc::new(AtomicBool::new(false));
@@ -159,7 +171,14 @@ fn enable_handle() -> AppResult<MultiGuard> {
         .spawn(move || handle_monitor(worker_stop, worker_ready))
         .map_err(|e| AppError::unexpected("start handle monitor", e))?;
     crate::log_info!("Multi Roblox started (handle mode)");
-    Ok(MultiGuard { mode: MultiMethod::Handle, mutexes: Vec::new(), cookie_lock: None, monitor_stop: Some(stop), monitor_ready: ready })
+    Ok(MultiGuard {
+        mode: MultiMethod::Handle,
+        mutexes: Vec::new(),
+        _login_files: Vec::new(),
+        launch_gate: Mutex::new(false),
+        monitor_stop: Some(stop),
+        monitor_ready: ready,
+    })
 }
 
 #[cfg(windows)]
@@ -183,32 +202,6 @@ fn handle_monitor(stop: Arc<AtomicBool>, ready: Arc<Mutex<std::collections::Hash
             }
         }
         std::thread::sleep(Duration::from_millis(250));
-    }
-}
-
-/// Error-773 fix: hold an exclusive lock on RobloxCookies.dat while multi-instance is on.
-#[cfg(windows)]
-fn lock_cookies() -> Option<CookieLock> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE};
-    use windows_sys::Win32::Storage::FileSystem::{CreateFileW, OPEN_EXISTING};
-    let path = crate::paths::local_appdata()?.join("Roblox").join("LocalStorage").join("RobloxCookies.dat");
-    if !path.exists() {
-        crate::log_info!("RobloxCookies.dat not found; 773 fix skipped");
-        return None;
-    }
-    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
-    // Open with no share flags so Roblox cannot reopen it while we hold it.
-    // SAFETY: wide path is null-terminated; the handle is owned by the returned CookieLock.
-    unsafe {
-        let handle = CreateFileW(wide.as_ptr(), GENERIC_READ | GENERIC_WRITE, 0, std::ptr::null(), OPEN_EXISTING, 0, std::ptr::null_mut());
-        if handle == INVALID_HANDLE_VALUE || handle.is_null() {
-            crate::log_warn!("Could not lock RobloxCookies.dat for the 773 fix");
-            None
-        } else {
-            crate::log_info!("Error 773 fix applied (cookie lock)");
-            Some(CookieLock { handle })
-        }
     }
 }
 

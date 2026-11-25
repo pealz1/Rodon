@@ -22,7 +22,7 @@ impl eframe::App for Unlock {
             ui.vertical_centered(|ui| {
                 ui.add_space(20.0);
                 ui.label(RichText::new(egui_phosphor::regular::LOCK_KEY).size(40.0).color(self.palette.accent));
-                ui.label(RichText::new("Nova RAM is locked").size(18.0).strong().color(self.palette.text));
+                ui.label(RichText::new("Rodon is locked").size(18.0).strong().color(self.palette.text));
                 ui.label(RichText::new("Enter your vault password.").size(12.0).color(self.palette.muted));
                 ui.add_space(14.0);
                 let field =
@@ -63,10 +63,10 @@ pub fn prompt(data_dir: &std::path::Path) -> Option<Arc<Core>> {
     let shared: Arc<std::sync::Mutex<Option<Arc<Core>>>> = Arc::new(std::sync::Mutex::new(None));
     let result = Arc::clone(&shared);
     let data_dir = data_dir.to_path_buf();
-    let viewport = egui::ViewportBuilder::default().with_inner_size([340.0, 320.0]).with_resizable(false).with_title("Nova RAM — Unlock");
+    let viewport = egui::ViewportBuilder::default().with_inner_size([340.0, 320.0]).with_resizable(false).with_title("Rodon — Unlock");
     let options = eframe::NativeOptions { viewport, ..Default::default() };
     let _ = eframe::run_native(
-        "Nova RAM Unlock",
+        "Rodon Unlock",
         options,
         Box::new(move |cc| {
             theme::install_fonts(&cc.egui_ctx);

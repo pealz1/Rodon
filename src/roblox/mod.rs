@@ -12,7 +12,7 @@ use serde::de::DeserializeOwned;
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
-pub const USER_AGENT: &str = concat!("NovaRAM/", env!("CARGO_PKG_VERSION"));
+pub const USER_AGENT: &str = concat!("Rodon/", env!("CARGO_PKG_VERSION"));
 
 static AGENT: LazyLock<ureq::Agent> =
     LazyLock::new(|| ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(20))).user_agent(USER_AGENT).build().into());
@@ -85,7 +85,7 @@ pub fn get_json<T: DeserializeOwned>(context: &str, url: &str, cookie: Option<&s
         return Err(status_error(context, status));
     }
     response.body_mut().read_json().map_err(|e| {
-        AppError::new("ROBLOX_BAD_RESPONSE", "Unexpected Response", format!("{context} returned data Nova could not read."))
+        AppError::new("ROBLOX_BAD_RESPONSE", "Unexpected Response", format!("{context} returned data Rodon could not read."))
             .with_detail(e.to_string())
     })
 }
@@ -144,7 +144,7 @@ pub fn post_json<B: serde::Serialize>(context: &str, url: &str, cookie: &str, bo
         }
         let mut response = response;
         return response.body_mut().read_json().map_err(|e| {
-            AppError::new("ROBLOX_BAD_RESPONSE", "Unexpected Response", format!("{context} returned data Nova could not read."))
+            AppError::new("ROBLOX_BAD_RESPONSE", "Unexpected Response", format!("{context} returned data Rodon could not read."))
                 .with_detail(e.to_string())
         });
     }

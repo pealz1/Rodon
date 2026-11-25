@@ -210,12 +210,19 @@ fn open_default(_url: &str) -> AppResult<()> {
 
 #[cfg(windows)]
 fn spawn_shell(url: &str) -> AppResult<()> {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    // `cmd /c start "" <url>` hands the protocol URL to the registered handler.
-    std::process::Command::new("cmd").args(["/c", "start", "", url]).creation_flags(CREATE_NO_WINDOW).spawn().map(|_| ()).map_err(|e| {
-        AppError::new("LAUNCH_FAILED", "Roblox Could Not Start", "Windows could not open the Roblox link.").with_detail(e.to_string())
-    })
+    use windows_sys::Win32::{UI::Shell::ShellExecuteW, UI::WindowsAndMessaging::SW_SHOWNORMAL};
+    let url: Vec<u16> = url.encode_utf16().chain(Some(0)).collect();
+    let verb: Vec<u16> = "open".encode_utf16().chain(Some(0)).collect();
+    // ShellExecute dispatches a URI directly, without a command interpreter.
+    let result =
+        unsafe { ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), url.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL) }
+            as isize;
+    if result <= 32 {
+        Err(AppError::new("LAUNCH_FAILED", "Roblox could not start", "Windows could not open the registered Roblox player.")
+            .with_detail(result.to_string()))
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

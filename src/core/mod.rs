@@ -38,8 +38,11 @@ impl Core {
         // Only create a fresh vault when no vault file exists at all. If a vault is
         // present but can't be read right now (a transient I/O error), propagate the
         // error instead of creating an empty vault over it.
-        let vault =
-            if Vault::exists(data_dir) { Vault::open(data_dir, password)? } else { Vault::create(data_dir, Protection::None, None)? };
+        let vault = if Vault::exists(data_dir) {
+            Vault::open(data_dir, password)?
+        } else {
+            Vault::create(data_dir, if cfg!(windows) { Protection::Windows } else { Protection::None }, None)?
+        };
         Ok(Arc::new(Core {
             data_dir: data_dir.to_path_buf(),
             cache: RwLock::new(vault.cached()),
@@ -57,6 +60,10 @@ impl Core {
 
     pub fn data_dir(&self) -> &Path {
         &self.data_dir
+    }
+
+    pub fn recovered(&self) -> bool {
+        self.vault.lock().unwrap_or_else(|e| e.into_inner()).recovered()
     }
 
     pub fn protection(&self) -> Protection {

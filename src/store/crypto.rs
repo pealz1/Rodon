@@ -15,7 +15,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha1::Sha1;
 
-/// Entropy mixed into Nova's own DPAPI blobs.
+/// Entropy mixed into Rodon's own DPAPI blobs.
 const NOVA_DPAPI_ENTROPY: &[u8] = b"NovaRAM vault v1";
 
 pub fn random_bytes<const N: usize>() -> [u8; N] {

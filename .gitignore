@@ -2,7 +2,7 @@
 /target/
 
 # App data (SENSITIVE - never commit)
-NovaData/
+RodonData/
 AccountManagerData/
 *.vault
 *.vault.bak

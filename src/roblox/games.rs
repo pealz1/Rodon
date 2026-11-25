@@ -74,7 +74,27 @@ fn as_id(value: &Option<serde_json::Value>) -> u64 {
 pub fn search(query: &str, session_id: &str, page_token: &str) -> AppResult<(Vec<GameInfo>, String)> {
     let query = query.trim();
     if query.is_empty() {
-        return Ok((Vec::new(), String::new()));
+        let v: serde_json::Value = get_json(
+            "Popular games",
+            &format!("https://apis.roblox.com/explore-api/v1/get-sorts?sessionId={}", urlencode(session_id)),
+            None,
+        )?;
+        let mut games = Vec::new();
+        if let Some(sorts) = v["sorts"].as_array() {
+            let mut lists = sorts.iter().filter(|s| s["contentType"] == "Games");
+            let top = lists.clone().find(|s| s["sortId"] == "top-playing-now").or_else(|| lists.next());
+            for row in top.and_then(|s| s["games"].as_array()).into_iter().flatten() {
+                if let (Some(universe_id), Some(place_id), Some(name)) =
+                    (crate::import::as_u64(&row["universeId"]), crate::import::as_u64(&row["rootPlaceId"]), row["name"].as_str())
+                    && universe_id > 0
+                    && place_id > 0
+                    && !games.iter().any(|g: &GameInfo| g.universe_id == universe_id)
+                {
+                    games.push(GameInfo { universe_id, place_id, name: name.to_owned(), ..Default::default() });
+                }
+            }
+        }
+        return Ok((games, String::new()));
     }
     let mut url =
         format!("https://apis.roblox.com/search-api/omni-search?searchQuery={}&sessionId={session_id}&pageType=all", urlencode(query));
@@ -100,6 +120,23 @@ pub fn search(query: &str, session_id: &str, page_token: &str) -> AppResult<(Vec
         }
     }
     Ok((games, response.next_page.unwrap_or_default()))
+}
+
+pub fn icons(ids: &[u64]) -> Vec<(u64, String)> {
+    let mut urls = Vec::new();
+    for chunk in ids.chunks(100) {
+        let query = chunk.iter().map(ToString::to_string).collect::<Vec<_>>().join(",");
+        let url = format!("https://thumbnails.roblox.com/v1/games/icons?universeIds={query}&size=150x150&format=Png&isCircular=false");
+        let Ok(result) = get_json::<serde_json::Value>("Game thumbnails", &url, None) else { continue };
+        for row in result["data"].as_array().into_iter().flatten() {
+            if row["state"] == "Completed"
+                && let (Some(id), Some(url)) = (row["targetId"].as_u64(), row["imageUrl"].as_str())
+            {
+                urls.push((id, url.to_owned()));
+            }
+        }
+    }
+    urls
 }
 
 #[derive(Deserialize)]

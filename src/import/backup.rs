@@ -1,6 +1,6 @@
 //! Portable, password-protected account backups.
 //!
-//! Nova writes `{format:"nova-accounts-backup", version:1, kdf, nonce, data}` where
+//! Rodon writes `{format:"nova-accounts-backup", version:1, kdf, nonce, data}` where
 //! `data` is Argon2id + AES-256-GCM over the accounts JSON. It also reads Evanovar's
 //! `{format:"ram-accounts-backup", version:1, salt, data:{nonce,tag,ciphertext}}`.
 
@@ -49,7 +49,7 @@ pub fn export(accounts: &[Account], path: &Path, password: &str) -> AppResult<us
     Ok(accounts.len())
 }
 
-/// Reads a Nova or Evanovar backup into an import batch.
+/// Reads a Rodon or Evanovar backup into an import batch.
 pub fn import(path: &Path, password: &str) -> AppResult<ImportBatch> {
     let bytes = std::fs::read(path).map_err(|e| AppError::io("Reading the backup", &e))?;
     let document: Value = serde_json::from_slice(&bytes)
@@ -62,9 +62,12 @@ pub fn import(path: &Path, password: &str) -> AppResult<ImportBatch> {
             crypto::aes_decrypt(&key, &crypto::unb64(&backup.nonce)?, &crypto::unb64(&backup.data)?).map_err(|_| wrong_password())?
         }
         EVANOVAR_FORMAT => decrypt_evanovar_backup(&document, password)?,
-        _ => return Err(AppError::new("BACKUP_INVALID", "Not A Backup", "This file is not an account backup Nova can read.")),
+        _ => return Err(AppError::new("BACKUP_INVALID", "Not A Backup", "This file is not an account backup Rodon can read.")),
     };
     let payload: Value = serde_json::from_slice(&plain).map_err(|e| malformed(&e.to_string()))?;
+    if !payload.get("accounts").is_some_and(|a| a.is_array() || a.is_object()) {
+        return Err(malformed("Missing account collection"));
+    }
     Ok(batch_from_accounts(&payload))
 }
 
@@ -82,7 +85,7 @@ fn decrypt_evanovar_backup(document: &Value, password: &str) -> AppResult<Vec<u8
 fn batch_from_accounts(payload: &Value) -> ImportBatch {
     let mut batch = ImportBatch { source: "backup".into(), ..Default::default() };
     let accounts = payload.get("accounts");
-    // Nova backups store an array of full Account objects.
+    // Rodon backups store an array of full Account objects.
     if let Some(array) = accounts.and_then(Value::as_array) {
         for item in array {
             if let Ok(account) = serde_json::from_value::<Account>(item.clone()) {
@@ -90,6 +93,7 @@ fn batch_from_accounts(payload: &Value) -> ImportBatch {
                     batch.skipped += 1;
                     continue;
                 }
+                batch.complete_accounts.push(account.clone());
                 batch.accounts.push(ImportedAccount {
                     cookie: account.cookie,
                     username: account.username,

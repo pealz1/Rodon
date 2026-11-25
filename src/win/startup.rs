@@ -1,13 +1,13 @@
 //! "Start with Windows" and Start Menu shortcut, via the registry Run key and a
-//! generated `.lnk` through PowerShell's WScript.Shell.
+//! native Windows Shell link.
 
 use crate::error::{AppError, AppResult};
 
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
-const RUN_VALUE: &str = "NovaRAM";
-const SHORTCUT_NAME: &str = "Nova RAM.lnk";
+const RUN_VALUE: &str = "Rodon";
+const SHORTCUT_NAME: &str = "Rodon.lnk";
 
-/// Whether Nova is registered to start with Windows.
+/// Whether Rodon is registered to start with Windows.
 #[cfg(windows)]
 pub fn is_startup_enabled() -> bool {
     read_run_value().is_some()
@@ -98,13 +98,32 @@ pub fn set_start_menu_shortcut(enabled: bool) -> AppResult<()> {
         return Ok(());
     }
     let exe = crate::paths::exe_path();
-    let script = format!(
-        "$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{}');$s.TargetPath='{}';$s.WorkingDirectory='{}';$s.Save()",
-        shortcut.display(),
-        exe.display(),
-        exe.parent().map(|p| p.display().to_string()).unwrap_or_default(),
-    );
-    run_powershell(&script)
+    use windows::{
+        Win32::{
+            System::Com::*,
+            UI::Shell::{IShellLinkW, ShellLink},
+        },
+        core::{HSTRING, Interface},
+    };
+    std::fs::create_dir_all(&programs).map_err(|e| AppError::io("Creating Start Menu directory", &e))?;
+    // The caller is the UI thread. Reuse its apartment when one is already initialized.
+    let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+    let initialized = hr.is_ok();
+    let result: windows::core::Result<()> = (|| unsafe {
+        let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
+        link.SetPath(&HSTRING::from(exe.as_os_str()))?;
+        if let Some(dir) = exe.parent() {
+            link.SetWorkingDirectory(&HSTRING::from(dir.as_os_str()))?;
+        }
+        let file: IPersistFile = link.cast()?;
+        file.Save(&HSTRING::from(shortcut.as_os_str()), true)
+    })();
+    if initialized {
+        unsafe {
+            CoUninitialize();
+        }
+    }
+    result.map_err(|e| AppError::unexpected("Creating Start Menu shortcut", e))
 }
 
 #[cfg(not(windows))]
@@ -127,23 +146,4 @@ fn dirs_start_menu() -> AppResult<std::path::PathBuf> {
     let appdata = std::env::var_os("APPDATA")
         .ok_or_else(|| AppError::new("APPDATA_MISSING", "App Data Missing", "The Windows APPDATA folder could not be located."))?;
     Ok(std::path::PathBuf::from(appdata).join("Microsoft").join("Windows").join("Start Menu").join("Programs"))
-}
-
-#[cfg(windows)]
-fn run_powershell(script: &str) -> AppResult<()> {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let output = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .map_err(|e| {
-            AppError::new("SHORTCUT_FAILED", "Shortcut Failed", "PowerShell could not create the shortcut.").with_detail(e.to_string())
-        })?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(AppError::new("SHORTCUT_FAILED", "Shortcut Failed", "The Start Menu shortcut could not be created.")
-            .with_detail(String::from_utf8_lossy(&output.stderr).into_owned()))
-    }
 }

@@ -47,7 +47,7 @@ pub fn tools() -> Vec<Tool> {
         Tool {
             name: "delete_account",
             destructive: true,
-            description: "Remove an account from Nova (does not affect the Roblox account). Requires confirm:true.",
+            description: "Remove an account from Rodon (does not affect the Roblox account). Requires confirm:true.",
             schema: json!({"type":"object","properties":{"account":{"type":"string"},"confirm":{"type":"boolean"}},"required":["account","confirm"]}),
         },
         Tool {

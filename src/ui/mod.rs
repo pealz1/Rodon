@@ -1,7 +1,15 @@
 //! The desktop GUI (egui/eframe).
 
+mod background;
+mod games;
+mod theme_editor;
+mod video;
+pub static SMOKE_PASSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+mod console;
+mod signup;
 mod task;
 mod theme;
+mod tray;
 mod unlock;
 mod widgets;
 mod pages {
@@ -11,6 +19,7 @@ mod pages {
     pub mod multi;
     pub mod private_servers;
     pub mod rejoin;
+    pub mod roblox_settings;
     pub mod servers;
     pub mod settings;
 }
@@ -25,8 +34,10 @@ use std::time::Instant;
 use task::{Msg, TaskSender, Tasks};
 use theme::Palette;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Page {
+    Donations,
+    Console,
     Accounts,
     Servers,
     PrivateServers,
@@ -37,7 +48,7 @@ pub enum Page {
 }
 
 impl Page {
-    const NAV: [(Page, &'static str, &'static str); 7] = [
+    const NAV: [(Page, &'static str, &'static str); 9] = [
         (Page::Accounts, egui_phosphor::regular::USERS_THREE, "Accounts"),
         (Page::Servers, egui_phosphor::regular::GLOBE_HEMISPHERE_WEST, "Servers"),
         (Page::PrivateServers, egui_phosphor::regular::LOCK_KEY, "Private Servers"),
@@ -45,6 +56,8 @@ impl Page {
         (Page::AntiAfk, egui_phosphor::regular::PERSON_SIMPLE_WALK, "Anti-AFK"),
         (Page::MultiRoblox, egui_phosphor::regular::STACK, "Multi Roblox"),
         (Page::Settings, egui_phosphor::regular::GEAR_SIX, "Settings"),
+        (Page::Console, egui_phosphor::regular::TERMINAL, "Console"),
+        (Page::Donations, egui_phosphor::regular::HEART, "Donations"),
     ];
 }
 
@@ -58,7 +71,36 @@ pub struct LaunchBar {
     pub join_user: String,
 }
 
-pub struct NovaApp {
+/// Progress of a background task (Roblox download, Chromium download), shared with
+/// the worker thread.
+#[derive(Default, Clone)]
+pub struct TaskProgress {
+    pub running: bool,
+    pub percent: u8,
+    pub text: String,
+}
+
+/// Inputs and progress for the Roblox / Chromium download controls in Settings.
+pub struct DownloadUi {
+    pub version: String,
+    pub folder: String,
+    pub roblox: Arc<std::sync::Mutex<TaskProgress>>,
+    pub chromium: Arc<std::sync::Mutex<TaskProgress>>,
+}
+
+impl Default for DownloadUi {
+    fn default() -> Self {
+        let folder = crate::services::downloader::default_versions_dir().map(|p| p.display().to_string()).unwrap_or_default();
+        DownloadUi {
+            version: "LIVE".into(),
+            folder,
+            roblox: Arc::new(std::sync::Mutex::new(TaskProgress::default())),
+            chromium: Arc::new(std::sync::Mutex::new(TaskProgress::default())),
+        }
+    }
+}
+
+pub struct RodonApp {
     pub core: Arc<Core>,
     pub services: Arc<Services>,
     pub tasks: Tasks,
@@ -66,6 +108,28 @@ pub struct NovaApp {
     pub palette: Palette,
     pub system_dark: bool,
     pub page: Page,
+    smoke_page: Option<usize>,
+    startup_size_pending: bool,
+    last_error: Option<String>,
+    recording_action: bool,
+    startup: Option<std::thread::JoinHandle<()>>,
+    splash: bool,
+    animation_allowed: bool,
+    last_page: Page,
+    transition: Instant,
+
+    ws_password: String,
+    backup_password: String,
+    replace_backup: bool,
+    games: Option<games::Games>,
+    theme_name: String,
+    media: background::Media,
+    pub download: DownloadUi,
+    detached: HashSet<Page>,
+    last_size: [f32; 2],
+    vault_password: String,
+    tray: Option<tray::Tray>,
+    quitting: bool,
 
     pub accounts: Vec<Account>,
     pub revision: u64,
@@ -87,6 +151,7 @@ pub struct NovaApp {
     pub add_dialog: Option<pages::add_account::AddDialog>,
     pub rejoin_dialog: Option<pages::rejoin::RejoinDialog>,
     pub ps_state: pages::private_servers::PrivateServersState,
+    pub roblox_editor: Option<pages::roblox_settings::EditorState>,
     pub confirm: Option<Confirm>,
     pub group_input: String,
     pub renaming_group: Option<(String, String)>,
@@ -96,30 +161,53 @@ pub struct NovaApp {
 pub struct Confirm {
     pub title: String,
     pub body: String,
-    pub action: Box<dyn FnOnce(&mut NovaApp) + Send>,
+    pub action: Box<dyn FnOnce(&mut RodonApp) + Send>,
 }
 
-impl NovaApp {
-    fn new(cc: &eframe::CreationContext<'_>, core: Arc<Core>, services: Arc<Services>) -> NovaApp {
+impl RodonApp {
+    fn new(cc: &eframe::CreationContext<'_>, core: Arc<Core>, services: Arc<Services>) -> RodonApp {
         theme::install_fonts(&cc.egui_ctx);
         let system_dark = !matches!(cc.egui_ctx.theme(), egui::Theme::Light);
         let settings = core.settings();
-        let palette = theme::palette(settings.theme, &settings.accent, system_dark);
+        let palette = theme::resolved(&settings, system_dark);
         theme::apply(&cc.egui_ctx, &palette, settings.ui_scale);
 
+        cc.egui_ctx.all_styles_mut(|style| style.animation_time = if settings.animations && windows_animations() { 0.14 } else { 0.0 });
         let tasks = Tasks::new(cc.egui_ctx.clone());
         let sender = tasks.sender();
         let ctx = cc.egui_ctx.clone();
         services.set_repaint(move || ctx.request_repaint());
 
-        let mut app = NovaApp {
+        let mut app = RodonApp {
             core: Arc::clone(&core),
-            services,
+            services: services.clone(),
             tasks,
             sender,
             palette,
             system_dark,
             page: Page::Accounts,
+            smoke_page: None,
+            startup_size_pending: settings.splash,
+            last_error: None,
+            recording_action: false,
+            splash: settings.splash,
+            startup: None,
+            animation_allowed: windows_animations(),
+            last_page: Page::Accounts,
+            transition: Instant::now(),
+
+            ws_password: String::new(),
+            backup_password: String::new(),
+            replace_backup: false,
+            games: None,
+            theme_name: String::new(),
+            media: Default::default(),
+            download: DownloadUi::default(),
+            detached: HashSet::new(),
+            last_size: settings.window_size,
+            vault_password: String::new(),
+            tray: None,
+            quitting: false,
             accounts: Vec::new(),
             revision: 0,
             selection: HashSet::new(),
@@ -127,7 +215,7 @@ impl NovaApp {
             search: String::new(),
             group_filter: None,
             launch: LaunchBar::default(),
-            rejoin: Arc::new(RejoinManager::default()),
+            rejoin: services.rejoin.clone(),
             anti_afk: None,
             avatars: HashMap::new(),
             avatar_pending: HashSet::new(),
@@ -137,11 +225,15 @@ impl NovaApp {
             add_dialog: None,
             rejoin_dialog: None,
             ps_state: Default::default(),
+            roblox_editor: None,
             confirm: None,
             group_input: String::new(),
             renaming_group: None,
         };
         app.reload_accounts();
+        if core.recovered() {
+            app.show_toast("Recovered accounts from the local backup. Recent changes may be missing.", true);
+        }
         app
     }
 
@@ -150,6 +242,7 @@ impl NovaApp {
         self.revision = self.core.revision();
         let keys: HashSet<String> = self.accounts.iter().map(Account::key).collect();
         self.selection.retain(|k| keys.contains(k));
+        self.services.avatars.prune(&self.accounts.iter().map(|a| a.user_id).collect());
     }
 
     /// Accounts after the search and group filters are applied.
@@ -174,13 +267,34 @@ impl NovaApp {
     }
 
     pub fn show_toast(&mut self, message: impl Into<String>, error: bool) {
-        self.toast = Some((message.into(), error, Instant::now()));
+        let message = message.into();
+        if error {
+            self.last_error = Some(crate::logging::redact(&message));
+            crate::log_error!("{}", message);
+        }
+        self.toast = Some((message, error, Instant::now()));
     }
 
     /// Returns a texture for an account avatar, fetching it in the background if missing.
     pub fn avatar_texture(&mut self, ctx: &egui::Context, user_id: u64) -> Option<egui::TextureHandle> {
         if user_id == 0 {
             return None;
+        }
+        if !self.avatar_pending.contains(&user_id) && self.services.avatars.needs_refresh(user_id) && self.avatar_pending.insert(user_id) {
+            let avatars = Arc::clone(&self.services.avatars);
+            let sender = self.sender.clone();
+            std::thread::Builder::new()
+                .name("avatar-fetch".into())
+                .spawn(move || {
+                    let updated = !avatars.refresh(&[user_id]).is_empty();
+                    sender.post(Msg::Run(Box::new(move |app| {
+                        if updated {
+                            app.avatars.remove(&user_id);
+                            app.avatar_pending.remove(&user_id);
+                        }
+                    })));
+                })
+                .ok();
         }
         if let Some(handle) = self.avatars.get(&user_id) {
             return Some(handle.clone());
@@ -193,23 +307,36 @@ impl NovaApp {
             let color = egui::ColorImage::from_rgba_unmultiplied(size, &rgba);
             let handle = ctx.load_texture(format!("avatar-{user_id}"), color, egui::TextureOptions::LINEAR);
             self.avatars.insert(user_id, handle.clone());
-            self.avatar_pending.remove(&user_id);
             return Some(handle);
-        }
-        if self.avatar_pending.insert(user_id) && self.services.avatars.needs_refresh(user_id) {
-            let avatars = Arc::clone(&self.services.avatars);
-            let sender = self.sender.clone();
-            std::thread::Builder::new()
-                .name("avatar-fetch".into())
-                .spawn(move || {
-                    avatars.refresh(&[user_id]);
-                    sender.post(Msg::Run(Box::new(move |_app| {})));
-                })
-                .ok();
         }
         None
     }
 
+    fn splash_frame(&mut self, ui: &mut egui::Ui) -> bool {
+        if !self.splash {
+            return false;
+        }
+        if self.startup.as_ref().is_some_and(|w| w.is_finished()) {
+            self.splash = false;
+            if let Some(task) = self.startup.take() {
+                let _ = task.join();
+            }
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::MinInnerSize(egui::vec2(820.0, 540.0)));
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::InnerSize(self.last_size.into()));
+            return false;
+        }
+        egui::CentralPanel::default().show(ui, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(22.0);
+                ui.heading("Rodon");
+                ui.label(format!("Version {}", crate::VERSION));
+                ui.spinner();
+                ui.label("Starting services…");
+            });
+        });
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(40));
+        true
+    }
     fn drain_messages(&mut self, ctx: &egui::Context) {
         for msg in self.tasks.drain() {
             match msg {
@@ -223,7 +350,6 @@ impl NovaApp {
                     self.game_names.insert(place, name);
                 }
                 Msg::PrivateServers(result) => self.ps_state.on_loaded(result),
-                Msg::QuickLogin(q) => pages::add_account::on_quick_login(self, q),
                 Msg::Run(callback) => callback(self),
             }
         }
@@ -239,7 +365,7 @@ impl NovaApp {
         ui.horizontal(|ui| {
             ui.add_space(14.0);
             ui.label(RichText::new(egui_phosphor::regular::ROCKET_LAUNCH).size(22.0).color(self.palette.accent));
-            ui.label(RichText::new("Nova RAM").size(18.0).strong().color(self.palette.text));
+            ui.label(RichText::new("Rodon").size(18.0).strong().color(self.palette.text));
         });
         ui.add_space(16.0);
 
@@ -254,9 +380,36 @@ impl NovaApp {
                 .min_size(egui::vec2(ui.available_width() - 16.0, 34.0));
             ui.horizontal(|ui| {
                 ui.add_space(8.0);
-                if ui.add(button).clicked() {
-                    self.page = page;
+                let response = ui.add(button);
+                let id = egui::ViewportId::from_hash_of(page);
+                if response.clicked() {
+                    if self.detached.contains(&page) {
+                        ui.ctx().send_viewport_cmd_to(id, egui::ViewportCommand::Focus);
+                    } else {
+                        self.page = page;
+                    }
                 }
+                response.context_menu(|ui| {
+                    if self.detached.contains(&page) {
+                        if ui.button("Show window").clicked() {
+                            ui.ctx().send_viewport_cmd_to(id, egui::ViewportCommand::Focus);
+                            ui.close();
+                        }
+                        if ui.button("Reattach page").clicked() {
+                            self.detached.remove(&page);
+                            self.page = page;
+                            ui.close();
+                        }
+                    } else if ui.button("Open in new window").clicked() {
+                        self.detached.insert(page);
+                        if self.page == page
+                            && let Some((other, _, _)) = Page::NAV.iter().find(|(p, _, _)| !self.detached.contains(p))
+                        {
+                            self.page = *other;
+                        }
+                        ui.close();
+                    }
+                });
             });
             ui.add_space(2.0);
         }
@@ -283,17 +436,35 @@ impl NovaApp {
                 )
                 .clicked()
             {
-                // kill_all waits up to a few seconds per process, so run it off the UI thread.
-                self.sender.spawn(Arc::clone(&self.core), Arc::clone(&self.services), |_, _| {
-                    let (closed, remaining) = crate::win::process::kill_all();
-                    Msg::Toast(format!("Closed {closed} client(s), {remaining} remaining"), remaining > 0)
+                self.confirm = Some(Confirm {
+                    title: "Close all Roblox clients?".into(),
+                    body: "Every running Roblox game on this computer will close.".into(),
+                    action: Box::new(|app| {
+                        // kill_all waits up to a few seconds per process, so run it off the UI thread.
+                        app.sender.spawn(Arc::clone(&app.core), Arc::clone(&app.services), |_, _| {
+                            let (closed, remaining) = crate::win::process::kill_all();
+                            Msg::Toast(format!("Closed {closed} client(s), {remaining} remaining"), remaining > 0)
+                        });
+                    }),
                 });
             }
         });
     }
 
-    fn render_page(&mut self, ui: &mut egui::Ui) {
-        match self.page {
+    fn render_page(&mut self, ui: &mut egui::Ui, page: Page) {
+        match page {
+            Page::Console => self.page_console(ui),
+            Page::Donations => {
+                ui.heading("Support evanovar");
+                ui.label("Evanovar created the Python account manager that Rodon is based on.");
+                ui.hyperlink_to("Open evanovar’s donation store", "https://www.roblox.com/games/718090786/donation#!/store");
+                ui.horizontal(|ui| {
+                    ui.label("Roblox username: evedkdmdj");
+                    if ui.button("Copy username").clicked() {
+                        ui.ctx().copy_text("evedkdmdj".into());
+                    }
+                });
+            }
             Page::Accounts => self.page_accounts(ui),
             Page::Servers => self.page_servers(ui),
             Page::PrivateServers => self.page_private_servers(ui),
@@ -369,10 +540,68 @@ impl NovaApp {
     }
 }
 
-impl eframe::App for NovaApp {
+impl eframe::App for RodonApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.services.heartbeat.store(chrono::Utc::now().timestamp(), std::sync::atomic::Ordering::Release);
+        if self.splash_frame(ui) {
+            return;
+        }
+        if let Some(index) = self.smoke_page {
+            if let Some((page, _, _)) = Page::NAV.get(index) {
+                self.page = *page;
+            } else if index == Page::NAV.len() {
+                self.detached.insert(Page::Console);
+            } else {
+                SMOKE_PASSED.store(true, std::sync::atomic::Ordering::Release);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            self.smoke_page = Some(index + 1);
+            ctx.request_repaint();
+        }
         self.drain_messages(&ctx);
+        if self.add_dialog.is_none()
+            && let Some(cookie) = self.services.pending_import.lock().unwrap_or_else(|p| p.into_inner()).take()
+        {
+            self.add_dialog = Some(pages::add_account::AddDialog { cookie, ..Default::default() });
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
+        let settings = self.core.settings();
+        if let Some(size) = ctx.input(|i| i.viewport().inner_rect.map(|r| r.size()))
+            && size.x >= 820.0
+            && size.y >= 540.0
+        {
+            self.last_size = [size.x, size.y];
+            self.startup_size_pending = false;
+        }
+        if settings.close_to_tray {
+            if self.tray.is_none() {
+                self.tray = tray::Tray::new(&ctx).ok();
+            }
+            if let Some(tray) = &self.tray {
+                ctx.request_repaint_after(std::time::Duration::from_millis(200));
+                match tray.poll() {
+                    Some(tray::Action::Show) => {
+                        self.services.window_visible.store(true, std::sync::atomic::Ordering::Release);
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    }
+                    Some(tray::Action::Quit) => {
+                        self.quitting = true;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                    None => {}
+                }
+                if !self.quitting && ctx.input(|i| i.viewport().close_requested()) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                    self.services.window_visible.store(false, std::sync::atomic::Ordering::Release);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                }
+            }
+        } else {
+            self.tray = None;
+        }
         if self.core.revision() != self.revision {
             self.reload_accounts();
         }
@@ -383,38 +612,112 @@ impl eframe::App for NovaApp {
             .frame(egui::Frame::new().fill(self.palette.surface))
             .show(ui, |ui| self.sidebar(ui));
 
-        egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(self.palette.bg).inner_margin(egui::Margin::same(16)))
-            .show(ui, |ui| self.render_page(ui));
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(self.palette.bg).inner_margin(egui::Margin::same(16))).show(ui, |ui| {
+            self.media.paint(ui, settings.appearance.as_ref().map(|t| &t.background));
+            if !self.detached.contains(&self.page) {
+                if self.last_page != self.page {
+                    self.transition = Instant::now();
+                    self.last_page = self.page;
+                }
+                if settings.animations && self.animation_allowed {
+                    let alpha = (self.transition.elapsed().as_secs_f32() / 0.15).min(1.0);
+                    ui.set_opacity(alpha);
+                    if alpha < 1.0 {
+                        ui.ctx().request_repaint();
+                    }
+                }
+                self.render_page(ui, self.page);
+            }
+        });
+
+        for (page, _, label) in Page::NAV {
+            if !self.detached.contains(&page) {
+                continue;
+            }
+            let viewport = egui::ViewportId::from_hash_of(page);
+            ctx.show_viewport_immediate(
+                viewport,
+                egui::ViewportBuilder::default().with_title(format!("Rodon · {label}")).with_inner_size([950.0, 640.0]),
+                |child, _| {
+                    if child.input(|i| i.viewport().close_requested()) {
+                        self.detached.remove(&page);
+                        self.page = page;
+                    } else {
+                        egui::CentralPanel::default().show(child, |ui| {
+                            self.media.paint(ui, settings.appearance.as_ref().map(|t| &t.background));
+                            self.render_page(ui, page);
+                        });
+                        if self.confirm.is_some()
+                            || self.add_dialog.is_some()
+                            || self.rejoin_dialog.is_some()
+                            || self.roblox_editor.is_some()
+                        {
+                            child.ctx().send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Focus);
+                        }
+                    }
+                },
+            );
+        }
 
         self.overlay(&ctx);
+        self.show_roblox_editor(&ctx);
+        self.show_games(&ctx);
         self.toast_overlay(&ctx);
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        if self.smoke_page.is_none() && !self.startup_size_pending {
+            let size = self.last_size;
+            let _ = self.core.edit_settings(|s| s.window_size = size);
+        }
+        if let Some(worker) = self.startup.take() {
+            let _ = worker.join();
+        }
         self.rejoin.stop_all();
         self.services.stop_all();
+        crate::services::instances::restore_hidden();
+        crate::services::roblox_settings::unlock_profile();
     }
 }
 
 /// Launches the desktop app. Blocks until the window closes.
-pub fn run(core: Arc<Core>, services: Arc<Services>) -> eframe::Result<()> {
+pub fn run(core: Arc<Core>, services: Arc<Services>, smoke: bool) -> eframe::Result<()> {
+    let settings = core.settings();
     let icon = load_icon();
     let viewport = egui::ViewportBuilder::default()
-        .with_inner_size([1060.0, 680.0])
-        .with_min_inner_size([820.0, 540.0])
+        .with_inner_size(if settings.splash { [380.0, 180.0] } else { settings.window_size })
+        .with_window_level(if settings.always_on_top { egui::WindowLevel::AlwaysOnTop } else { egui::WindowLevel::Normal })
+        .with_min_inner_size(if settings.splash { [320.0, 160.0] } else { [820.0, 540.0] })
         .with_title(format!("{} v{}", crate::APP_NAME, crate::VERSION))
         .with_icon(icon);
     let options = eframe::NativeOptions { viewport, ..Default::default() };
     eframe::run_native(
-        "Nova RAM",
+        "Rodon",
         options,
         Box::new(move |cc| {
-            let app = NovaApp::new(cc, Arc::clone(&core), Arc::clone(&services));
-            services.start_background();
+            let mut app = RodonApp::new(cc, Arc::clone(&core), Arc::clone(&services));
+            if smoke {
+                app.smoke_page = Some(0);
+                return Ok(Box::new(app));
+            }
+            let worker = std::thread::spawn(move || services.start_background());
+            app.startup = Some(worker);
             Ok(Box::new(app))
         }),
     )
+}
+
+fn windows_animations() -> bool {
+    let mut enabled = 1i32;
+    unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::SystemParametersInfoW(
+            windows_sys::Win32::UI::WindowsAndMessaging::SPI_GETCLIENTAREAANIMATION,
+            0,
+            (&mut enabled as *mut i32).cast(),
+            0,
+        );
+    }
+    enabled != 0
 }
 
 fn load_icon() -> egui::IconData {
@@ -440,7 +743,7 @@ pub fn unlock_prompt(data_dir: &std::path::Path) -> Option<Arc<Core>> {
 pub fn fatal_dialog(message: &str) {
     use std::os::windows::ffi::OsStrExt;
     let text: Vec<u16> = std::ffi::OsStr::new(message).encode_wide().chain(std::iter::once(0)).collect();
-    let title: Vec<u16> = std::ffi::OsStr::new("Nova RAM").encode_wide().chain(std::iter::once(0)).collect();
+    let title: Vec<u16> = std::ffi::OsStr::new("Rodon").encode_wide().chain(std::iter::once(0)).collect();
     // SAFETY: both strings are null-terminated; MessageBoxW only reads them.
     unsafe {
         windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(std::ptr::null_mut(), text.as_ptr(), title.as_ptr(), 0x10);

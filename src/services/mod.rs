@@ -5,9 +5,12 @@ pub mod anti_afk;
 pub mod auto_rejoin;
 pub mod avatars;
 pub mod cookie_check;
+pub mod downloader;
 pub mod history;
+pub mod installers;
 pub mod instances;
 pub mod renamer;
+pub mod roblox_plus;
 pub mod roblox_settings;
 pub mod updater;
 
@@ -22,6 +25,7 @@ pub struct Activity {
     pub running: bool,
     pub client_count: usize,
     pub ram_mb: f64,
+    pub cpu_percent: f64,
 }
 
 /// A running Roblox client, for the Instances page.
@@ -40,6 +44,7 @@ pub struct Live {
     rejoin_status: RwLock<HashMap<String, String>>,
     instances: RwLock<Vec<Instance>>,
     update_available: RwLock<Option<String>>,
+    pub update_notes: RwLock<String>,
     /// Transient status text shown in the UI (and a flag the UI clears after reading).
     toast: Mutex<Option<(String, bool)>>,
 }
@@ -137,6 +142,12 @@ pub fn interruptible_sleep(stop: &AtomicBool, total: std::time::Duration) -> boo
 
 /// Owns the shared `Live` state, the avatar cache and the running workers.
 pub struct Services {
+    pub heartbeat: std::sync::atomic::AtomicI64,
+    pub window_visible: AtomicBool,
+    pub rejoin: Arc<auto_rejoin::RejoinManager>,
+    pub pending_import: Mutex<Option<String>>,
+    websocket: Mutex<Option<crate::api::websocket::Server>>,
+
     pub core: Arc<Core>,
     pub live: Arc<Live>,
     pub avatars: Arc<avatars::AvatarCache>,
@@ -149,6 +160,11 @@ impl Services {
     pub fn new(core: Arc<Core>) -> Arc<Services> {
         let cache_days = core.settings().avatar_cache_days;
         Arc::new(Services {
+            heartbeat: std::sync::atomic::AtomicI64::new(chrono::Utc::now().timestamp()),
+            window_visible: AtomicBool::new(true),
+            rejoin: Default::default(),
+            pending_import: Default::default(),
+            websocket: Default::default(),
             core,
             live: Arc::new(Live::default()),
             avatars: Arc::new(avatars::AvatarCache::new(cache_days)),
@@ -176,8 +192,53 @@ impl Services {
     /// Starts the always-on background workers and services.
     pub fn start_background(self: &Arc<Self>) {
         let settings = self.core.settings();
-        if settings.activity_monitor {
-            activity::start(self);
+        if settings.roblox.advanced_auto_apply
+            && let Some(path) = roblox_settings::settings_path(&settings.roblox)
+            && path.exists()
+            && let Err(e) = roblox_settings::apply_profile(&path, true)
+        {
+            crate::log_warn!("{}", e);
+        }
+        activity::start(self);
+        instances::start_trim(self);
+        if settings.refresh_account_stats {
+            let core = self.core.clone();
+            self.add_worker(Worker::spawn("profile-badges", Arc::new(AtomicBool::new(false)), move || roblox_plus::refresh(&core)));
+        }
+        crate::win::hotkey::start(self);
+        let quit = Arc::new(AtomicBool::new(false));
+        let stop = quit.clone();
+        let weak = Arc::downgrade(self);
+        self.add_worker(Worker::spawn("ui-watchdog", quit, move || {
+            let mut reported = false;
+            while !interruptible_sleep(&stop, std::time::Duration::from_secs(3)) {
+                let Some(s) = weak.upgrade() else { break };
+                if !s.window_visible.load(Ordering::Acquire) {
+                    continue;
+                }
+                s.request_repaint();
+                let now = chrono::Utc::now().timestamp();
+                if now.saturating_sub(s.heartbeat.load(Ordering::Acquire)) > 20 {
+                    if !reported {
+                        let path = crate::paths::logs_dir().join(format!("ui-hang-{now}.log"));
+                        let lines = crate::logging::recent(100)
+                            .into_iter()
+                            .map(|l| format!("{} [{:?}] {}", l.at, l.level, l.text))
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        let _ = std::fs::write(path, format!("Rodon UI stopped responding. Recent log entries:\n{lines}"));
+                        reported = true;
+                    }
+                } else {
+                    reported = false;
+                }
+            }
+        }));
+        if let Err(e) = self.configure_websocket() {
+            crate::log_warn!("WebSocket: {}", e);
+        }
+        if let Err(e) = installers::apply(settings.installer_fix) {
+            crate::log_warn!("Roblox installer: {}", e);
         }
         if settings.track_server_history {
             history::start(self);
@@ -196,8 +257,23 @@ impl Services {
         }
     }
 
+    pub fn configure_websocket(self: &Arc<Self>) -> std::io::Result<()> {
+        let mut server = self.websocket.lock().unwrap_or_else(|e| e.into_inner());
+        server.take();
+        let cfg = self.core.settings();
+        if cfg.websocket_enabled {
+            *server = Some(crate::api::websocket::start(self, cfg.websocket_port)?);
+        }
+        Ok(())
+    }
     /// Stops every worker and the API server (called on shutdown).
     pub fn stop_all(&self) {
+        self.websocket.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if self.core.settings().installer_fix
+            && let Err(e) = installers::apply(false)
+        {
+            crate::log_warn!("Restoring Roblox installer: {}", e);
+        }
         self.api.lock().unwrap_or_else(|p| p.into_inner()).take();
         let workers = std::mem::take(&mut *self.workers.lock().unwrap_or_else(|p| p.into_inner()));
         for worker in workers {

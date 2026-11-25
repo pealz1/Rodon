@@ -146,7 +146,7 @@ fn respond(request: Request, status: u16, value: Value) {
 }
 
 /// Constant-time comparison for the bearer token (no early return on mismatch).
-fn constant_time_eq(a: &str, b: &str) -> bool {
+pub(super) fn constant_time_eq(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
     if a.len() != b.len() {
         return false;

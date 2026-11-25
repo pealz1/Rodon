@@ -39,6 +39,71 @@ pub fn logs_dir() -> Option<PathBuf> {
     crate::paths::local_appdata().map(|p| p.join("Roblox").join("logs"))
 }
 
+/// Accept identity only from a game-join line in the file for this launch.
+fn launch_identity(text: &str, tracker: u64) -> Option<(Option<u64>, bool)> {
+    static WEB: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)web launch, websiteBTId is (\d+)").unwrap());
+    static USER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\[FLog::GameJoinLoadTime\][^\r\n]*?\buserid:(\d+)[,\s]").unwrap());
+    let matches = WEB.captures_iter(text).chain(TRACKER_RE.captures_iter(text)).any(|m| m[1].parse().ok() == Some(tracker));
+    matches.then(|| (USER.captures(text).and_then(|c| c[1].parse().ok()), text.contains("challengedByGcs")))
+}
+
+pub fn confirm_launch(launched: &super::launch::Launched, user: u64) -> crate::error::AppResult<()> {
+    use crate::error::AppError;
+    use std::{
+        io::Read,
+        time::{Duration, Instant},
+    };
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let dir = logs_dir().ok_or_else(|| AppError::invalid("LOGS_MISSING", "The Roblox logs folder is unavailable."))?;
+    while Instant::now() < deadline {
+        let mut matched = Vec::new();
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            if entry.path().extension().and_then(|s| s.to_str()) != Some("log") {
+                continue;
+            }
+            if entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .is_none_or(|m| DateTime::<Utc>::from(m).timestamp_millis() + 2000 < launched.launch_time_ms)
+            {
+                continue;
+            }
+            let Ok(file) = std::fs::File::open(entry.path()) else { continue };
+            let mut bytes = Vec::new();
+            if file.take(4 * 1024 * 1024).read_to_end(&mut bytes).is_err() {
+                continue;
+            }
+            if let Some(result) = launch_identity(&String::from_utf8_lossy(&bytes), launched.browser_tracker_id) {
+                matched.push(result);
+            }
+        }
+        if matched.iter().any(|(_, challenge)| *challenge) {
+            return Err(AppError::invalid(
+                "ROBLOX_SECURITY_CHALLENGE",
+                "Complete the verification on Roblox before restarting Multi Roblox.",
+            ));
+        }
+        if matched.len() > 1 {
+            return Err(AppError::invalid("LAUNCH_IDENTITY_AMBIGUOUS", "More than one client log matched this launch."));
+        }
+        if let Some((id, _)) = matched.first() {
+            if id.is_some_and(|id| id != user) {
+                return Err(AppError::invalid("ROBLOX_ACCOUNT_MISMATCH", "Roblox joined as a different account."));
+            }
+            let window = crate::win::process::list_roblox().iter().any(|p| {
+                let created_ms = (p.id.created / 10_000) as i64 - 11_644_473_600_000;
+                created_ms >= launched.launch_time_ms - 2_000 && crate::win::window::main_window(p.id.pid).is_some()
+            });
+            if window && (launched.place_id.is_empty() || *id == Some(user)) {
+                return Ok(());
+            }
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    Err(AppError::invalid("ROBLOX_LAUNCH_UNCONFIRMED", "Roblox did not confirm this launch. Multi Roblox is paused."))
+}
+
 /// Lists `*_last.log` files with their timestamps and (if present) user id and tracker id.
 pub fn scan_logs() -> Vec<LogInfo> {
     let Some(dir) = logs_dir() else { return Vec::new() };
@@ -64,6 +129,37 @@ pub fn scan_logs() -> Vec<LogInfo> {
     }
     out.sort_by_key(|l| l.started);
     out
+}
+
+/// Only close a stale client when Windows attributes its open join log to one exact Roblox process.
+pub fn confirmed_client(user: u64) -> Option<crate::win::process::ProcId> {
+    use crate::win::process::{file_owners, list_roblox};
+    if user == 0 {
+        return None;
+    }
+    let clients = list_roblox();
+    if clients.is_empty() {
+        return None;
+    }
+    let mut matches = std::collections::BTreeSet::new();
+    for log in scan_logs().into_iter().rev().filter(|l| l.user_id == user).take(12) {
+        let Some(started) = log.started else { continue };
+        if !clients.iter().any(|p| {
+            let created = (p.id.created / 10_000_000) as i64 - 11_644_473_600;
+            (created - started.timestamp()).abs() <= 90
+        }) {
+            continue;
+        }
+        let Ok(head) = read_head(&log.path, 1024 * 1024) else { continue };
+        static JOINED_USER: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"(?im)\[FLog::GameJoinLoadTime\][^\r\n]*?\buserid:(\d+)\b").unwrap());
+        let mut joined = JOINED_USER.captures_iter(&head).filter_map(|m| m[1].parse::<u64>().ok());
+        if joined.next() != Some(user) || joined.any(|id| id != user) {
+            continue;
+        }
+        matches.extend(file_owners(&log.path).into_iter().filter(|owner| owner.created != 0 && clients.iter().any(|p| p.id == *owner)));
+    }
+    if matches.len() == 1 { matches.pop_first() } else { None }
 }
 
 /// Reads every server join from a single log file, in order.
@@ -147,5 +243,17 @@ mod tests {
         assert_eq!(joins[0].job_id, "e88d60e0-7feb-43a0-bbf8-039ad0ce07e3");
         assert_eq!(joins[0].server_ip, "10.208.8.159");
         assert!(joins[0].at.is_some());
+    }
+}
+
+#[cfg(test)]
+mod confirmation_tests {
+    use super::*;
+    #[test]
+    fn exact_tracker_and_join_identity_are_required() {
+        let lines = "web launch, websiteBTId is 121\n[FLog::GameJoinLoadTime] userid:42, placeid:81\n";
+        assert_eq!(launch_identity(lines, 121), Some((Some(42), false)));
+        assert_eq!(launch_identity(lines, 12), None);
+        assert_eq!(launch_identity("browsertrackerid:121, userid:99, challengedByGcs", 121), Some((None, true)));
     }
 }

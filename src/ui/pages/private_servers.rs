@@ -3,7 +3,7 @@
 
 use crate::error::AppResult;
 use crate::store::model::SavedPrivateServer;
-use crate::ui::NovaApp;
+use crate::ui::RodonApp;
 use crate::ui::task::Msg;
 use crate::ui::widgets;
 use eframe::egui::{self, RichText};
@@ -31,7 +31,7 @@ impl PrivateServersState {
     }
 }
 
-impl NovaApp {
+impl RodonApp {
     pub(in crate::ui) fn page_private_servers(&mut self, ui: &mut egui::Ui) {
         ui.label(RichText::new("Private Servers").size(22.0).strong().color(self.palette.text));
         ui.add_space(8.0);
@@ -118,11 +118,17 @@ impl NovaApp {
                     if widgets::ghost_button(ui, &self.palette, &format!("{} Join", egui_phosphor::regular::PLAY)).clicked() {
                         *action = Some(Action::Join(server.clone()));
                     }
+                    if let Some(active) = server.active {
+                        ui.small(if active { "Active" } else { "Inactive" });
+                    }
+                    if !server.link.is_empty() && ui.button("Use in launcher").clicked() {
+                        *action = Some(Action::Apply(server.clone()));
+                    }
                     if !server.link.is_empty() && ui.button(egui_phosphor::regular::LINK).on_hover_text("Copy link").clicked() {
                         ui.ctx().copy_text(server.link.clone());
                     }
                     if ui.button(egui_phosphor::regular::ARROWS_CLOCKWISE).on_hover_text("New join link").clicked() {
-                        *action = Some(Action::Refresh(server.clone()));
+                        *action = Some(Action::ConfirmRefresh(server.clone()));
                     }
                     if saved {
                         if ui
@@ -159,16 +165,33 @@ impl NovaApp {
 
     fn run_server_action(&mut self, action: Action) {
         match action {
+            Action::Apply(server) => {
+                self.launch.place_id = server.place_id.to_string();
+                self.launch.private_server = server.link;
+                self.launch.game_name = server.game_name;
+                self.page = crate::ui::Page::Accounts;
+            }
+            Action::ConfirmRefresh(server) => {
+                self.confirm = Some(crate::ui::Confirm {
+                    title: "Replace this server’s join link?".into(),
+                    body: "Anyone using the previous link will need the new one.".into(),
+                    action: Box::new(move |app| app.run_server_action(Action::Refresh(server))),
+                });
+            }
+
             Action::Join(server) => {
                 let keys = if self.selection.is_empty() { vec![self.ps_state.account.clone()] } else { self.selected_keys() };
-                let link = if server.link.is_empty() { server.id.clone() } else { server.link.clone() };
-                self.sender.spawn(Arc::clone(&self.core), Arc::clone(&self.services), move |core, _| {
-                    match core.join_private_server(&keys, &link) {
+                if server.link.is_empty() {
+                    self.show_toast("Generate a join link for this server first.", true);
+                    return;
+                }
+                let link = server.link.clone();
+                self.confirm_launch(keys.len(), format!("Private server {}", server.name), move |app| {
+                    app.sender.spawn(app.core.clone(), app.services.clone(), move |core, _| match core.join_private_server(&keys, &link) {
                         Ok(result) => Msg::Toast(result.summary("Joined"), !result.ok()),
-                        Err(err) => Msg::Toast(err.message, true),
-                    }
+                        Err(e) => Msg::Toast(e.message, true),
+                    });
                 });
-                self.show_toast("Joining private server…", false);
             }
             Action::Save(server) => match self.core.save_private_servers(vec![server]) {
                 Ok(()) => self.show_toast("Saved", false),
@@ -182,7 +205,21 @@ impl NovaApp {
                 let place = server.place_id;
                 self.sender.spawn(Arc::clone(&self.core), Arc::clone(&self.services), move |_, _| {
                     match crate::roblox::private_servers::refresh_link(&account.cookie, server.vip_server_id, place) {
-                        Ok(link) => Msg::Toast(format!("New link: {link}"), false),
+                        Ok(link) => Msg::Run(Box::new(move |app| {
+                            for row in &mut app.ps_state.loaded {
+                                if row.vip_server_id == server.vip_server_id {
+                                    row.link = link.clone();
+                                }
+                            }
+                            let _ = app.core.edit(|d| {
+                                for row in &mut d.private_servers {
+                                    if row.vip_server_id == server.vip_server_id {
+                                        row.link = link.clone();
+                                    }
+                                }
+                            });
+                            app.show_toast("Join link updated", false);
+                        })),
                         Err(err) => Msg::Toast(err.message, true),
                     }
                 });
@@ -192,6 +229,8 @@ impl NovaApp {
 }
 
 enum Action {
+    Apply(SavedPrivateServer),
+    ConfirmRefresh(SavedPrivateServer),
     Join(SavedPrivateServer),
     Save(SavedPrivateServer),
     Remove(String),

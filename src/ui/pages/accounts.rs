@@ -4,11 +4,11 @@ use crate::roblox::launch::LaunchRequest;
 use crate::store::model::{Account, CookieStatus};
 use crate::ui::task::Msg;
 use crate::ui::widgets::{self};
-use crate::ui::{NovaApp, Page};
+use crate::ui::{Page, RodonApp};
 use eframe::egui::{self, Color32, RichText, Sense, Vec2};
 use std::sync::Arc;
 
-impl NovaApp {
+impl RodonApp {
     pub(in crate::ui) fn page_accounts(&mut self, ui: &mut egui::Ui) {
         self.header_bar(ui);
         self.group_bar(ui);
@@ -28,6 +28,7 @@ impl NovaApp {
     fn header_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label(RichText::new("Accounts").size(22.0).strong().color(self.palette.text));
+            ui.small(self.core.protection().label());
             ui.label(RichText::new(format!("{}", self.accounts.len())).size(13.0).color(self.palette.faint));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if widgets::primary_button(ui, &self.palette, &format!("{}  Add account", egui_phosphor::regular::PLUS)).clicked() {
@@ -36,7 +37,23 @@ impl NovaApp {
                 let search = egui::TextEdit::singleline(&mut self.search)
                     .hint_text(format!("{}  Search", egui_phosphor::regular::MAGNIFYING_GLASS))
                     .desired_width(220.0);
-                ui.add(search);
+                let response = ui.add(search);
+                if ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::F)) {
+                    response.request_focus();
+                }
+                if response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    self.search.clear();
+                    response.surrender_focus();
+                }
+                if ui.button("Refresh").clicked() {
+                    self.sender.spawn(self.core.clone(), self.services.clone(), |core, _| {
+                        crate::services::roblox_plus::refresh(core);
+                        Msg::AccountsChanged
+                    });
+                    self.avatars.clear();
+                    self.avatar_pending.clear();
+                    self.reload_accounts();
+                }
             });
         });
         ui.add_space(6.0);
@@ -164,7 +181,7 @@ impl NovaApp {
         let key = account.key();
         let selected = self.selection.contains(&key);
         let activity = self.services.live.activity_for(account.user_id);
-        let texture = self.avatar_texture(ctx, account.user_id);
+        let texture = if self.core.settings().show_avatars { self.avatar_texture(ctx, account.user_id) } else { None };
 
         let fill = if selected { self.palette.accent.gamma_multiply(0.18) } else { self.palette.surface };
         let stroke = egui::Stroke::new(1.0, if selected { self.palette.accent } else { self.palette.line });
@@ -172,7 +189,7 @@ impl NovaApp {
             .fill(fill)
             .stroke(stroke)
             .corner_radius(10.0)
-            .inner_margin(egui::Margin::symmetric(12, 9))
+            .inner_margin(egui::Margin::symmetric(12, if self.core.settings().compact_rows { 3 } else { 9 }))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     // Avatar
@@ -208,6 +225,9 @@ impl NovaApp {
                     ui.vertical(|ui| {
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(account.label()).size(14.0).strong().color(self.palette.text));
+                            if account.fields.get("roblox_plus").is_some_and(|v| v == "true") {
+                                widgets::chip(ui, "Plus", self.palette.accent_text, self.palette.accent);
+                            }
                             if account.starred {
                                 ui.label(RichText::new(egui_phosphor::regular::STAR).size(12.0).color(self.palette.star));
                             }
@@ -239,14 +259,32 @@ impl NovaApp {
                             } else {
                                 format!("{:.0} MB", activity.ram_mb)
                             };
-                            ui.label(RichText::new(ram).size(11.0).color(self.palette.muted));
+                            ui.label(
+                                RichText::new(format!("{ram} · {:.1}% CPU", activity.cpu_percent)).size(11.0).color(self.palette.muted),
+                            );
                             widgets::status_dot(ui, self.palette.in_game);
                         }
                     });
                 });
             })
             .response
-            .interact(Sense::click());
+            .interact(Sense::click_and_drag());
+        response.dnd_set_drag_payload(key.clone());
+        if let Some(source) = response.dnd_release_payload::<String>() {
+            let visible: Vec<_> = self.visible_accounts().iter().map(Account::key).collect();
+            let order: Vec<_> = self.accounts.iter().map(Account::key).collect();
+            let next = ui
+                .input(|i| i.pointer.interact_pos())
+                .filter(|p| p.y > response.rect.center().y)
+                .map(|_| visible.iter().skip_while(|k| **k != key).nth(1).map(String::as_str))
+                .unwrap_or(Some(&key));
+            let reordered = crate::store::model::move_account(&order, &source, next, &visible);
+            if reordered != order
+                && let Err(err) = self.core.reorder(&reordered)
+            {
+                self.show_toast(err.message, true);
+            }
+        }
 
         if response.clicked() {
             self.handle_row_click(ui, &key);
@@ -256,11 +294,11 @@ impl NovaApp {
 
     fn handle_row_click(&mut self, ui: &egui::Ui, key: &str) {
         let modifiers = ui.input(|i| i.modifiers);
-        if modifiers.ctrl || modifiers.command {
+        if self.core.settings().multi_select && (modifiers.ctrl || modifiers.command) {
             if !self.selection.remove(key) {
                 self.selection.insert(key.to_owned());
             }
-        } else if modifiers.shift && self.last_clicked.is_some() {
+        } else if self.core.settings().multi_select && modifiers.shift && self.last_clicked.is_some() {
             let order: Vec<String> = self.visible_accounts().iter().map(Account::key).collect();
             let anchor = self.last_clicked.clone().unwrap();
             if let (Some(a), Some(b)) = (order.iter().position(|k| k == &anchor), order.iter().position(|k| k == key)) {
@@ -321,27 +359,51 @@ impl NovaApp {
             self.add_dialog = Some(super::add_account::AddDialog::note(account));
             ui.close();
         }
-        if count == 1 {
-            if self.core.settings().allow_copy_secrets && ui.button(format!("{}  Copy cookie", egui_phosphor::regular::COPY)).clicked() {
-                ui.ctx().copy_text(account.cookie.clone());
-                self.show_toast("Cookie copied", false);
-                ui.close();
+        ui.menu_button(if count == 1 { "Copy contents" } else { "Export selected contents…" }, |ui| {
+            for format in ["Username", "Password", "User:Pass", "Cookie"] {
+                if format != "Username" && !self.core.settings().allow_copy_secrets {
+                    continue;
+                }
+                if ui.button(format).clicked() {
+                    let rows = self
+                        .accounts
+                        .iter()
+                        .filter(|a| self.selection.contains(&a.key()))
+                        .filter_map(|a| match format {
+                            "Username" => Some(a.username.clone()),
+                            "Password" if !a.password.is_empty() => Some(a.password.clone()),
+                            "User:Pass" if !a.password.is_empty() => Some(format!("{}:{}", a.username, a.password)),
+                            "Cookie" if !a.cookie.is_empty() => Some(a.cookie.clone()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                    if rows.is_empty() {
+                        self.show_toast("No saved values for this selection", true);
+                    } else if count == 1 {
+                        ui.ctx().copy_text(rows.join("\n"));
+                    } else if let Some(path) = rfd::FileDialog::new().set_file_name("selected-accounts.txt").save_file()
+                        && let Err(e) = crate::store::atomic::write_atomic(&path, rows.join("\n").as_bytes())
+                    {
+                        self.show_toast(e.to_string(), true);
+                    }
+                    ui.close();
+                }
             }
-            if ui.button(format!("{}  Refresh cookie status", egui_phosphor::regular::ARROWS_CLOCKWISE)).clicked() {
-                let k = key.clone();
-                self.sender.spawn(Arc::clone(&self.core), Arc::clone(&self.services), move |core, _| {
-                    crate::services::cookie_check::check_one(core, &k);
-                    Msg::AccountsChanged
-                });
-                ui.close();
-            }
+        });
+        if count == 1 && ui.button(format!("{}  Refresh cookie status", egui_phosphor::regular::ARROWS_CLOCKWISE)).clicked() {
+            let k = key.clone();
+            self.sender.spawn(Arc::clone(&self.core), Arc::clone(&self.services), move |core, _| {
+                crate::services::cookie_check::check_one(core, &k);
+                Msg::AccountsChanged
+            });
+            ui.close();
         }
         ui.separator();
         if ui.button(RichText::new(format!("{}  Delete ({count})", egui_phosphor::regular::TRASH)).color(self.palette.danger)).clicked() {
             let keys = self.selected_keys();
             self.confirm = Some(super::super::Confirm {
                 title: format!("Delete {count} account(s)?"),
-                body: "They are removed from Nova only. The Roblox accounts are not affected.".into(),
+                body: "They are removed from Rodon only. The Roblox accounts are not affected.".into(),
                 action: Box::new(move |app| {
                     for k in &keys {
                         let _ = app.core.delete_account(k);
@@ -444,6 +506,9 @@ impl NovaApp {
                 }
             });
 
+            if ui.button("Browse games…").clicked() {
+                self.open_games();
+            }
             self.favorites_dropdown(ui);
             self.recent_games_list(ui);
         });
@@ -458,7 +523,14 @@ impl NovaApp {
         ui.label(RichText::new("Favourites").size(11.0).color(self.palette.muted));
         egui::ComboBox::from_id_salt("favorites").selected_text("Pick a favourite").width(ui.available_width()).show_ui(ui, |ui| {
             for fav in favorites {
-                if ui.selectable_label(false, format!("{} ({})", fav.name, fav.place_id)).clicked() {
+                let item = ui.selectable_label(false, format!("{} ({})", fav.name, fav.place_id));
+                item.context_menu(|ui| {
+                    if ui.button("Remove favourite").clicked() {
+                        let _ = self.core.remove_favorite(fav.place_id, &fav.private_server);
+                        ui.close();
+                    }
+                });
+                if item.clicked() {
                     self.launch.place_id = fav.place_id.to_string();
                     self.launch.private_server = fav.private_server.clone();
                     self.launch.game_name = fav.name.clone();
@@ -474,13 +546,22 @@ impl NovaApp {
         }
         ui.add_space(10.0);
         ui.label(RichText::new("Recent").size(11.0).color(self.palette.muted));
-        for game in recents.into_iter().take(5) {
+        for game in recents {
             let label = format!(
                 "{}{}",
                 if game.private_server.is_empty() { "" } else { "[P] " },
                 if game.name.is_empty() { game.place_id.to_string() } else { game.name.clone() }
             );
-            if ui.add(egui::Button::new(RichText::new(label).size(12.0).color(self.palette.text)).fill(Color32::TRANSPARENT)).clicked() {
+            let item = ui.add(egui::Button::new(RichText::new(label).size(12.0).color(self.palette.text)).fill(Color32::TRANSPARENT));
+            item.context_menu(|ui| {
+                if ui.button("Remove recent game").clicked() {
+                    let _ = self
+                        .core
+                        .edit(|data| data.recent_games.retain(|g| g.place_id != game.place_id || g.private_server != game.private_server));
+                    ui.close();
+                }
+            });
+            if item.clicked() {
                 self.launch.place_id = game.place_id.to_string();
                 self.launch.private_server = game.private_server.clone();
                 self.launch.game_name = game.name.clone();
@@ -509,6 +590,20 @@ impl NovaApp {
             self.show_toast("Select at least one account", true);
             return;
         }
+        let target = if request.place_id.is_empty() { "Roblox Home".into() } else { format!("place {}", request.place_id) };
+        self.confirm_launch(keys.len(), target, move |app| app.launch_confirmed(keys, request, verb));
+    }
+
+    pub(in crate::ui) fn confirm_launch(&mut self, count: usize, target: String, action: impl FnOnce(&mut Self) + Send + 'static) {
+        if self.core.settings().confirm_before_launch {
+            self.confirm =
+                Some(crate::ui::Confirm { title: format!("Launch {count} account(s)?"), body: target, action: Box::new(action) });
+        } else {
+            action(self);
+        }
+    }
+
+    fn launch_confirmed(&mut self, keys: Vec<String>, request: LaunchRequest, verb: &'static str) {
         let count = keys.len();
         self.sender.spawn(Arc::clone(&self.core), Arc::clone(&self.services), move |core, _| {
             let result = core.launch_batch(&keys, &request);
@@ -527,11 +622,13 @@ impl NovaApp {
             self.show_toast("Select at least one account", true);
             return;
         }
-        self.sender.spawn(Arc::clone(&self.core), Arc::clone(&self.services), move |core, _| {
-            match core.join_small_server(&keys, place_id) {
-                Ok(result) => Msg::Toast(result.summary("Joined"), !result.ok()),
-                Err(err) => Msg::Toast(err.message, true),
-            }
+        self.confirm_launch(keys.len(), format!("Small server in place {place_id}"), move |app| {
+            app.sender.spawn(Arc::clone(&app.core), Arc::clone(&app.services), move |core, _| {
+                match core.join_small_server(&keys, place_id) {
+                    Ok(result) => Msg::Toast(result.summary("Joined"), !result.ok()),
+                    Err(err) => Msg::Toast(err.message, true),
+                }
+            });
         });
     }
 
@@ -542,9 +639,11 @@ impl NovaApp {
             self.show_toast("Select accounts and enter a user", true);
             return;
         }
-        self.sender.spawn(Arc::clone(&self.core), Arc::clone(&self.services), move |core, _| match core.join_user(&keys, &target) {
-            Ok(result) => Msg::Toast(result.summary("Joined"), !result.ok()),
-            Err(err) => Msg::Toast(err.message, true),
+        self.confirm_launch(keys.len(), format!("Join {target}"), move |app| {
+            app.sender.spawn(Arc::clone(&app.core), Arc::clone(&app.services), move |core, _| match core.join_user(&keys, &target) {
+                Ok(result) => Msg::Toast(result.summary("Joined"), !result.ok()),
+                Err(err) => Msg::Toast(err.message, true),
+            });
         });
     }
 

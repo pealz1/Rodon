@@ -2,7 +2,7 @@
 
 use crate::import;
 use crate::store::model::Account;
-use crate::ui::NovaApp;
+use crate::ui::RodonApp;
 use crate::ui::task::{Msg, QuickLoginMsg};
 use crate::ui::widgets;
 use eframe::egui::{self, RichText};
@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum Tab {
+    Create,
     Cookie,
     UserPass,
     Quick,
@@ -18,6 +19,8 @@ pub enum Tab {
 }
 
 pub struct AddDialog {
+    pub approval: Arc<()>,
+    pub creator: crate::ui::signup::Creator,
     pub tab: Tab,
     pub cookie: String,
     pub user: String,
@@ -33,6 +36,8 @@ impl Default for AddDialog {
     fn default() -> AddDialog {
         AddDialog {
             tab: Tab::Cookie,
+            creator: Default::default(),
+            approval: Arc::new(()),
             cookie: String::new(),
             user: String::new(),
             pass: String::new(),
@@ -52,7 +57,7 @@ impl AddDialog {
 }
 
 /// Renders the dialog; returns the dialog to keep it open, or None to close.
-pub fn show(app: &mut NovaApp, ctx: &egui::Context, mut dialog: AddDialog) -> Option<AddDialog> {
+pub fn show(app: &mut RodonApp, ctx: &egui::Context, mut dialog: AddDialog) -> Option<AddDialog> {
     let mut keep = true;
     let title = if dialog.tab == Tab::Note { "Edit note" } else { "Add accounts" };
     egui::Modal::new(egui::Id::new("add-account")).show(ctx, |ui| {
@@ -73,6 +78,7 @@ pub fn show(app: &mut NovaApp, ctx: &egui::Context, mut dialog: AddDialog) -> Op
             tab_bar(app, ui, &mut dialog);
             ui.add_space(10.0);
             keep &= match dialog.tab {
+                Tab::Create => crate::ui::signup::show(app, ui, &mut dialog),
                 Tab::Cookie => cookie_body(app, ui, &mut dialog),
                 Tab::UserPass => user_pass_body(app, ui, &mut dialog),
                 Tab::Quick => quick_body(app, ui, &mut dialog),
@@ -84,11 +90,15 @@ pub fn show(app: &mut NovaApp, ctx: &egui::Context, mut dialog: AddDialog) -> Op
     keep.then_some(dialog)
 }
 
-fn tab_bar(app: &NovaApp, ui: &mut egui::Ui, dialog: &mut AddDialog) {
+fn tab_bar(app: &RodonApp, ui: &mut egui::Ui, dialog: &mut AddDialog) {
     ui.horizontal(|ui| {
-        for (tab, label) in
-            [(Tab::Cookie, "Cookie"), (Tab::UserPass, "User : Pass"), (Tab::Quick, "Quick sign-in"), (Tab::Import, "Import")]
-        {
+        for (tab, label) in [
+            (Tab::Cookie, "Cookie"),
+            (Tab::UserPass, "Browser"),
+            (Tab::Create, "Create"),
+            (Tab::Quick, "Quick sign-in"),
+            (Tab::Import, "Import"),
+        ] {
             let selected = dialog.tab == tab;
             let (fg, bg) =
                 if selected { (app.palette.accent_text, app.palette.accent) } else { (app.palette.muted, app.palette.surface_alt) };
@@ -99,7 +109,7 @@ fn tab_bar(app: &NovaApp, ui: &mut egui::Ui, dialog: &mut AddDialog) {
     });
 }
 
-fn cookie_body(app: &mut NovaApp, ui: &mut egui::Ui, dialog: &mut AddDialog) -> bool {
+fn cookie_body(app: &mut RodonApp, ui: &mut egui::Ui, dialog: &mut AddDialog) -> bool {
     ui.label(RichText::new("Paste one or more .ROBLOSECURITY cookies.").size(12.0).color(app.palette.muted));
     ui.add_space(6.0);
     ui.add(
@@ -140,35 +150,32 @@ fn cookie_body(app: &mut NovaApp, ui: &mut egui::Ui, dialog: &mut AddDialog) -> 
     })
 }
 
-fn user_pass_body(app: &mut NovaApp, ui: &mut egui::Ui, dialog: &mut AddDialog) -> bool {
-    ui.label(
-        RichText::new("Signing in with a username and password isn't available in this version yet.")
-            .size(13.0)
-            .strong()
-            .color(app.palette.text),
-    );
-    ui.add_space(6.0);
-    ui.label(
-        RichText::new(format!(
-            "{}  Add accounts with the Cookie tab, or use Quick sign-in to approve a code on a device you're already signed in on — no password needed.",
-            egui_phosphor::regular::INFO
-        ))
-        .size(12.0)
-        .color(app.palette.muted),
-    );
-    ui.add_space(10.0);
-    ui.horizontal(|ui| {
-        if widgets::primary_button(ui, &app.palette, "Use Quick sign-in").clicked() {
-            dialog.tab = Tab::Quick;
-        }
-        if widgets::ghost_button(ui, &app.palette, "Use Cookie").clicked() {
-            dialog.tab = Tab::Cookie;
-        }
-    });
+fn user_pass_body(app: &mut RodonApp, ui: &mut egui::Ui, dialog: &mut AddDialog) -> bool {
+    ui.label("Sign in on Roblox, then approve the code shown in Quick sign-in.");
+    if widgets::primary_button(ui, &app.palette, "Open Roblox sign-in").clicked() {
+        open_roblox(app, ui, "https://www.roblox.com/login");
+        dialog.tab = Tab::Quick;
+    }
+    if ui.button("Create an account on Roblox").clicked() {
+        open_roblox(app, ui, "https://www.roblox.com/CreateAccount");
+    }
     true
 }
 
-fn quick_body(app: &mut NovaApp, ui: &mut egui::Ui, dialog: &mut AddDialog) -> bool {
+pub(in crate::ui) fn open_roblox(app: &mut RodonApp, ui: &egui::Ui, url: &'static str) {
+    let preference = app.core.settings().browser;
+    if preference.is_empty() || preference == "auto" {
+        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+    } else if let Some(browser) = crate::browser::discover::available().into_iter().find(|b| b.label == preference) {
+        if let Err(err) = std::process::Command::new(browser.exe).arg(url).spawn() {
+            app.show_toast(err.to_string(), true);
+        }
+    } else {
+        app.show_toast("The selected browser is unavailable. Choose another in Settings.", true);
+    }
+}
+
+fn quick_body(app: &mut RodonApp, ui: &mut egui::Ui, dialog: &mut AddDialog) -> bool {
     ui.label(
         RichText::new("Enter this code at roblox.com/login/enterCode or in the Roblox app on a signed-in device.")
             .size(12.0)
@@ -180,6 +187,9 @@ fn quick_body(app: &mut NovaApp, ui: &mut egui::Ui, dialog: &mut AddDialog) -> b
             ui.label(RichText::new(code).size(30.0).strong().monospace().color(app.palette.accent));
             ui.add_space(4.0);
             ui.label(RichText::new("Waiting for approval…").size(12.0).color(app.palette.muted));
+            if ui.button("Open Roblox to approve").clicked() {
+                open_roblox(app, ui, "https://www.roblox.com/login/enterCode");
+            }
             ui.add(egui::Spinner::new());
         });
     } else if dialog.busy {
@@ -188,13 +198,13 @@ fn quick_body(app: &mut NovaApp, ui: &mut egui::Ui, dialog: &mut AddDialog) -> b
         });
     } else if widgets::primary_button(ui, &app.palette, "Start quick sign-in").clicked() {
         dialog.busy = true;
-        start_quick_login(app);
+        start_quick_login(app, Arc::downgrade(&dialog.approval));
     }
     ui.add_space(8.0);
     true
 }
 
-fn import_body(app: &mut NovaApp, ui: &mut egui::Ui, dialog: &mut AddDialog) -> bool {
+fn import_body(app: &mut RodonApp, ui: &mut egui::Ui, dialog: &mut AddDialog) -> bool {
     ui.label(
         RichText::new("Paste cookies, user:pass lines, CSV or JSON — or import a file from another manager.")
             .size(12.0)
@@ -215,10 +225,11 @@ fn import_body(app: &mut NovaApp, ui: &mut egui::Ui, dialog: &mut AddDialog) -> 
             import_file(app, &path, None);
             return;
         }
+        ui.add(egui::TextEdit::singleline(&mut dialog.pass).password(true).desired_width(96.0).hint_text("File password"));
         if widgets::ghost_button(ui, &app.palette, &format!("{} Evanovar / ic3w0lf / backup", egui_phosphor::regular::DATABASE)).clicked()
-            && let Some(path) = rfd::FileDialog::new().add_filter("Manager files", &["json", "novabackup"]).pick_file()
+            && let Some(path) = rfd::FileDialog::new().add_filter("Manager files", &["json", "rodonbackup", "novabackup"]).pick_file()
         {
-            import_manager_file(app, &path);
+            import_manager_file(app, &path, &dialog.pass);
         }
     });
     ui.add_space(10.0);
@@ -229,14 +240,25 @@ fn import_body(app: &mut NovaApp, ui: &mut egui::Ui, dialog: &mut AddDialog) -> 
     })
 }
 
-fn note_body(app: &mut NovaApp, ui: &mut egui::Ui, dialog: &mut AddDialog) -> bool {
+fn note_body(app: &mut RodonApp, ui: &mut egui::Ui, dialog: &mut AddDialog) -> bool {
     ui.add(egui::TextEdit::multiline(&mut dialog.note).desired_rows(3).desired_width(f32::INFINITY));
     ui.add_space(10.0);
     let mut keep = true;
     ui.horizontal(|ui| {
         if widgets::primary_button(ui, &app.palette, "Save").clicked() {
             if let Some(target) = &dialog.note_target {
-                let _ = app.core.set_note(target, &dialog.note);
+                let keys = if app.selection.contains(target) { app.selected_keys() } else { vec![target.clone()] };
+                let result = app.core.edit(|data| {
+                    for key in &keys {
+                        if let Some(account) = data.find_mut(key) {
+                            account.note.clone_from(&dialog.note);
+                        }
+                    }
+                });
+                if let Err(err) = result {
+                    app.show_toast(err.message, true);
+                    return;
+                }
                 app.reload_accounts();
             }
             keep = false;
@@ -250,11 +272,11 @@ fn note_body(app: &mut NovaApp, ui: &mut egui::Ui, dialog: &mut AddDialog) -> bo
 
 /// A Cancel + primary action row. The action returns whether to close the dialog.
 fn action_row(
-    app: &mut NovaApp,
+    app: &mut RodonApp,
     ui: &mut egui::Ui,
     dialog: &mut AddDialog,
     label: &str,
-    action: impl FnOnce(&mut NovaApp, &mut AddDialog) -> bool,
+    action: impl FnOnce(&mut RodonApp, &mut AddDialog) -> bool,
 ) -> bool {
     let mut keep = true;
     ui.horizontal(|ui| {
@@ -268,7 +290,7 @@ fn action_row(
     keep
 }
 
-fn import_file(app: &mut NovaApp, path: &std::path::Path, _hint: Option<()>) {
+fn import_file(app: &mut RodonApp, path: &std::path::Path, _hint: Option<()>) {
     match std::fs::read_to_string(path) {
         Ok(text) => {
             let batch = import::parse_text(&text);
@@ -278,12 +300,16 @@ fn import_file(app: &mut NovaApp, path: &std::path::Path, _hint: Option<()>) {
     }
 }
 
-fn import_manager_file(app: &mut NovaApp, path: &std::path::Path) {
+fn import_manager_file(app: &mut RodonApp, path: &std::path::Path, password: &str) {
     let path = path.to_path_buf();
     // Try Evanovar, then ic3w0lf, then backup; password-locked files report what is needed.
-    let batch = import::evanovar::read_accounts(&path, None, None)
-        .or_else(|_| import::ic3w0lf::read_accounts(&path, None))
-        .or_else(|_| import::backup::import(&path, ""));
+    let pw = (!password.is_empty()).then_some(password);
+    let header = std::fs::read(&path).ok().and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+    let batch = match header {
+        Some(ref data) if data.get("format").is_some() => import::backup::import(&path, password),
+        Some(ref data) if data.is_object() => import::evanovar::read_accounts(&path, pw, None),
+        _ => import::ic3w0lf::read_accounts(&path, pw),
+    };
     match batch {
         Ok(mut batch) => {
             if let Some(dir) = path.parent() {
@@ -296,12 +322,12 @@ fn import_manager_file(app: &mut NovaApp, path: &std::path::Path) {
 }
 
 /// Resolves usernames/ids for cookie accounts (off-thread) and applies the import.
-fn resolve_and_apply(app: &mut NovaApp, batch: import::ImportBatch) {
+fn resolve_and_apply(app: &mut RodonApp, batch: import::ImportBatch) {
     if batch.with_cookies() == 0 {
         if batch.needs_sign_in().is_empty() {
             app.show_toast("No importable accounts found", true);
         } else {
-            app.show_toast(format!("{} account(s) need a browser sign-in (not yet supported for bulk)", batch.needs_sign_in().len()), true);
+            app.show_toast(format!("{} account(s) need individual approval with Quick Sign-in", batch.needs_sign_in().len()), true);
         }
         return;
     }
@@ -338,43 +364,57 @@ fn resolve_and_apply(app: &mut NovaApp, batch: import::ImportBatch) {
     app.show_toast("Importing…", false);
 }
 
-fn start_quick_login(app: &mut NovaApp) {
+fn start_quick_login(app: &mut RodonApp, approval: std::sync::Weak<()>) {
     let sender = app.sender.clone();
     let core = Arc::clone(&app.core);
     std::thread::Builder::new()
         .name("quick-login".into())
         .spawn(move || {
             use crate::roblox::account::{self, QuickStatus};
+            let send = |msg: QuickLoginMsg| {
+                let expected = approval.clone();
+                sender.post(Msg::Run(Box::new(move |app| {
+                    if app.add_dialog.as_ref().is_some_and(|d| expected.ptr_eq(&Arc::downgrade(&d.approval))) {
+                        on_quick_login(app, msg);
+                    }
+                })));
+            };
             let login = match account::quick_login_start() {
                 Ok(login) => login,
                 Err(err) => {
-                    sender.post(Msg::QuickLogin(QuickLoginMsg::Failed(err.message)));
+                    send(QuickLoginMsg::Failed(err.message));
                     return;
                 }
             };
-            sender.post(Msg::QuickLogin(QuickLoginMsg::Code(login.code.clone())));
+            send(QuickLoginMsg::Code(login.code.clone()));
             loop {
                 std::thread::sleep(std::time::Duration::from_secs(4));
+                if approval.strong_count() == 0 {
+                    return;
+                }
                 match account::quick_login_poll(&login) {
                     Ok(QuickStatus::Validated(_)) => break,
                     Ok(QuickStatus::Cancelled) => {
-                        sender.post(Msg::QuickLogin(QuickLoginMsg::Failed("Sign-in was cancelled or timed out".into())));
+                        send(QuickLoginMsg::Failed("Sign-in was cancelled or timed out".into()));
                         return;
                     }
                     Ok(QuickStatus::Pending) => continue,
                     Err(_) => continue,
                 }
             }
+            if approval.strong_count() == 0 {
+                return;
+            }
             match account::quick_login_redeem(&login).and_then(|cookie| core.add_cookie(&cookie)) {
-                Ok(account) => sender.post(Msg::QuickLogin(QuickLoginMsg::Added(account.username))),
-                Err(err) => sender.post(Msg::QuickLogin(QuickLoginMsg::Failed(err.message))),
+                Ok(account) => send(QuickLoginMsg::Added(account.username)),
+                Err(err) => send(QuickLoginMsg::Failed(err.message)),
             }
         })
         .ok();
 }
 
 /// Handles quick-login progress messages posted from the poller thread.
-pub fn on_quick_login(app: &mut NovaApp, msg: QuickLoginMsg) {
+pub fn on_quick_login(app: &mut RodonApp, msg: QuickLoginMsg) {
     match msg {
         QuickLoginMsg::Code(code) => {
             if let Some(dialog) = app.add_dialog.as_mut() {

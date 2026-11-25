@@ -108,11 +108,22 @@ pub fn recent(limit: usize) -> Vec<LogLine> {
     sink.recent.iter().skip(skip).cloned().collect()
 }
 
+pub fn close() {
+    SINK.lock().unwrap_or_else(|p| p.into_inner()).file.take();
+}
+
+pub fn clear_view() {
+    SINK.lock().unwrap_or_else(|p| p.into_inner()).recent.clear();
+}
+
 /// Keeps only the newest `keep` session and crash logs.
 pub fn prune(keep: usize, protect: &PathBuf) {
+    if keep == 0 {
+        return;
+    }
     let dir = crate::paths::logs_dir();
-    for prefix in ["session-", "crash-", "update-"] {
-        let mut files: Vec<(std::time::SystemTime, PathBuf)> = fs::read_dir(&dir)
+    for (dir, prefix) in [(&dir, "session-"), (&dir, "update-"), (&dir, "ui-hang-"), (&crate::paths::data_file("crash_logs"), "crash-")] {
+        let mut files: Vec<(std::time::SystemTime, PathBuf)> = fs::read_dir(dir)
             .into_iter()
             .flatten()
             .flatten()
@@ -135,7 +146,9 @@ fn install_panic_hook() {
         let text = format!("{info}\n\n{backtrace}");
         write(Level::Error, &format!("Panic: {info}"));
         let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
-        let path = crate::paths::logs_dir().join(format!("crash-{stamp}.log"));
+        let dir = crate::paths::data_file("crash_logs");
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join(format!("crash-{stamp}.log"));
         let _ = fs::write(&path, redact(&text));
         previous(info);
     }));

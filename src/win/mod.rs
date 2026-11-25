@@ -2,6 +2,7 @@
 
 pub mod grid;
 pub mod handles;
+pub mod hotkey;
 pub mod multi;
 pub mod process;
 pub mod startup;

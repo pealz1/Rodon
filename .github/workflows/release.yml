@@ -36,31 +36,38 @@ jobs:
       - name: Verify the executable launches
         shell: pwsh
         run: |
-          $exe = "target/x86_64-pc-windows-msvc/release/NovaRAM.exe"
+          $exe = "target/x86_64-pc-windows-msvc/release/Rodon.exe"
           if (-not (Test-Path $exe)) { throw "Build output missing" }
           $out = & $exe --version
           if ($LASTEXITCODE -ne 0) { throw "Executable did not run" }
           Write-Host "Launched: $out"
+          $smoke = Start-Process -FilePath (Resolve-Path $exe) -ArgumentList '--smoke-test' -PassThru
+          if (-not $smoke.WaitForExit(60000)) { $smoke.Kill(); throw "GUI smoke test timed out" }
+          if ($smoke.ExitCode -ne 0) { throw "GUI smoke test failed" }
 
       - name: Stage release assets with checksum
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
         shell: pwsh
         run: |
-          $tag = "${{ github.event.inputs.tag || github.ref_name }}"
+          $tag = $env:RELEASE_TAG
+          $metadata = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
+          if ($tag -ne "v$($metadata.packages[0].version)") { throw "Tag must match Cargo.toml" }
           $version = $tag.TrimStart("v")
           New-Item -ItemType Directory -Force dist | Out-Null
-          $asset = "dist/NovaRAM-v$version.exe"
-          Copy-Item "target/x86_64-pc-windows-msvc/release/NovaRAM.exe" $asset
+          $asset = "dist/Rodon-v$version.exe"
+          Copy-Item "target/x86_64-pc-windows-msvc/release/Rodon.exe" $asset
           $hash = (Get-FileHash $asset -Algorithm SHA256).Hash.ToLower()
-          "$hash  NovaRAM-v$version.exe" | Out-File -Encoding ascii "$asset.sha256"
+          "$hash  Rodon-v$version.exe" | Out-File -Encoding ascii "$asset.sha256"
           Write-Host "SHA-256: $hash"
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          name: Nova RAM ${{ github.event.inputs.tag || github.ref_name }}
+          name: Rodon ${{ github.event.inputs.tag || github.ref_name }}
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
-            dist/NovaRAM-v*.exe
-            dist/NovaRAM-v*.exe.sha256
+            dist/Rodon-v*.exe
+            dist/Rodon-v*.exe.sha256

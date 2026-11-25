@@ -2,7 +2,7 @@
 //!
 //! Sources: plain text / `.txt` (one account per line), CSV with a header row,
 //! JSON arrays or objects, Evanovar RAM `saved_accounts.json` and its backups,
-//! ic3w0lf Roblox Account Manager `AccountData.json`, and Nova backups.
+//! ic3w0lf Roblox Account Manager `AccountData.json`, and Rodon backups.
 //!
 //! Only files and text the user hands us are read. Browser profiles are never touched.
 
@@ -64,6 +64,7 @@ impl ImportedAccount {
 
 #[derive(Debug, Clone, Default)]
 pub struct ImportBatch {
+    pub complete_accounts: Vec<Account>,
     pub source: String,
     pub accounts: Vec<ImportedAccount>,
     pub groups: Vec<String>,
