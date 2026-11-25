@@ -31,9 +31,7 @@ impl RodonApp {
             && let Some(path) = rfd::FileDialog::new().add_filter("RAM theme", &["ramtheme"]).pick_file()
         {
             match themes::import(&path, self.core.data_dir()) {
-                Ok(mut t) => {
-                    let name = t.name.clone();
-                    t.fork(&name);
+                Ok(t) => {
                     s.saved_themes.push(t.clone());
                     s.appearance = Some(t);
                     changed_library = true;
@@ -41,6 +39,7 @@ impl RodonApp {
                 Err(e) => self.show_toast(e.to_string(), true),
             }
         }
+        let mut delete = false;
         if let Some(t) = &mut s.appearance {
             ui.collapsing("Customize colors and background", |ui| {
                 let mut edit = None;
@@ -86,7 +85,32 @@ impl RodonApp {
                 }
                 ui.add(egui::Slider::new(&mut t.background.blur, 0..=100).text("Blur"));
                 ui.add(egui::Slider::new(&mut t.background.dim, 0..=100).text("Dim"));
-                ui.text_edit_singleline(&mut self.theme_name);
+                ui.add(egui::TextEdit::singleline(&mut self.theme_name).hint_text("Theme name"));
+                if let Some(saved) = s.saved_themes.iter_mut().find(|saved| saved.id == t.id) {
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.button("Save changes").clicked() {
+                            *saved = t.clone();
+                            changed_library = true;
+                        }
+                        let name = self.theme_name.trim();
+                        if ui.add_enabled(!name.is_empty() && name.chars().count() <= 80, egui::Button::new("Rename")).clicked() {
+                            t.name = name.to_owned();
+                            saved.name = t.name.clone();
+                            self.theme_name.clear();
+                            changed_library = true;
+                        }
+                        if self.theme_delete.as_ref() == Some(&t.id) {
+                            if ui.button("Confirm delete").clicked() {
+                                delete = true;
+                            }
+                            if ui.button("Cancel").clicked() {
+                                self.theme_delete = None;
+                            }
+                        } else if ui.button("Delete theme").clicked() {
+                            self.theme_delete = Some(t.id.clone());
+                        }
+                    });
+                }
                 ui.horizontal(|ui| {
                     if ui.button("Save named copy").clicked() {
                         if self.theme_name.trim().is_empty() || self.theme_name.chars().count() > 80 {
@@ -111,6 +135,11 @@ impl RodonApp {
                     }
                 });
             });
+        }
+        if delete && let Some(id) = self.theme_delete.take() {
+            s.saved_themes.retain(|t| t.id != id);
+            s.appearance = None;
+            changed_library = true;
         }
         changed_library || s.appearance != before
     }

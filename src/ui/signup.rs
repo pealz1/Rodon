@@ -39,7 +39,7 @@ pub fn show(app: &mut RodonApp, ui: &mut egui::Ui, d: &mut AddDialog) -> bool {
                     ui.ctx().copy_text(pw.clone());
                 }
                 if ui.button("Register").clicked() {
-                    open_roblox(app, ui, "https://www.roblox.com/CreateAccount");
+                    open_roblox(app, ui, "https://www.roblox.com/");
                 }
             });
         }

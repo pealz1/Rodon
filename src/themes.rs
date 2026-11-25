@@ -25,6 +25,7 @@ pub struct Background {
 pub struct Theme {
     pub format: String,
     pub version: u32,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub id: String,
     pub name: String,
     pub colors: Colors,
@@ -143,7 +144,7 @@ impl Theme {
         }
         Ok(())
     }
-    pub fn fork(&mut self, name: &str) {
+    fn assign_local_id(&mut self) {
         let n = rand::random::<u128>();
         self.id = format!(
             "{:08x}-{:04x}-4{:03x}-8{:03x}-{:012x}",
@@ -153,6 +154,9 @@ impl Theme {
             (n >> 48) & 4095,
             n & 0xffffffffffff
         );
+    }
+    pub fn fork(&mut self, name: &str) {
+        self.assign_local_id();
         self.name = name.trim().to_owned();
         self.starting_colors = self.colors.clone();
         self.starting_customized = self.customized.clone();
@@ -189,6 +193,7 @@ pub fn copy_media(path: &Path, dir: &Path) -> io::Result<PathBuf> {
 pub fn export(theme: &Theme, path: &Path) -> io::Result<()> {
     theme.validate()?;
     let mut t = theme.clone();
+    t.id.clear();
     let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
     let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
     if !t.background.path.is_empty() {
@@ -207,7 +212,7 @@ pub fn export(theme: &Theme, path: &Path) -> io::Result<()> {
 }
 pub fn import(path: &Path, dir: &Path) -> io::Result<Theme> {
     let file = fs::File::open(path)?;
-    if file.metadata()?.len() > LIMIT + 1024 * 1024 {
+    if file.metadata()?.len() > 260 * 1024 * 1024 {
         return Err(invalid());
     }
     let mut zip = zip::ZipArchive::new(file)?;
@@ -229,11 +234,32 @@ pub fn import(path: &Path, dir: &Path) -> io::Result<Theme> {
         let bytes = read_limit(zip.by_name(&t.background.path)?, LIMIT)?;
         t.background.path = store_media(&bytes, &ext, dir)?.display().to_string();
     }
+    t.assign_local_id();
     Ok(t)
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn reads_a_portable_archive_from_the_upstream_python_exporter() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("import.ramtheme");
+        // Produced by ThemeLibrary.export_theme in evanovar/RobloxAccountManager at 8b37709.
+        fs::write(&path, include_bytes!("../tests/fixtures/evanovar.ramtheme")).unwrap();
+        let theme = import(&path, dir.path()).unwrap();
+        assert_eq!(theme.name, "Evanovar export fixture");
+        assert_eq!(theme.colors["ACCENT_HOVER"], "#C1542C");
+        assert_ne!(theme.starting_colors["ACCENT_HOVER"], theme.colors["ACCENT_HOVER"]);
+        assert_eq!(theme.customized, ["ACCENT_HOVER"]);
+        assert_eq!(theme.id.len(), 36);
+        let image = image::open(&theme.background.path).unwrap();
+        assert_eq!((image.width(), image.height()), (2, 1));
+        export(&theme, &path).unwrap();
+        let mut zip = zip::ZipArchive::new(fs::File::open(path).unwrap()).unwrap();
+        let manifest: serde_json::Value = serde_json::from_reader(zip.by_name("theme.json").unwrap()).unwrap();
+        assert!(manifest.get("id").is_none());
+        assert_eq!(manifest["background"]["path"], "background.png");
+    }
     #[test]
     fn color_edits_preserve_overrides_and_reset_the_original_palette() {
         let mut t = PRESETS[0].clone();

@@ -19,7 +19,7 @@ cargo build --release --locked
 .\target\release\Rodon.exe
 ```
 
-On first launch, choose **Accounts → Add account**. Start Quick Sign-in and approve the displayed code in the official Roblox sign-in flow for your account. Registration opens on Roblox and is completed in the browser.
+On first launch, choose **Accounts → Add account**. Start Quick Sign-in and approve the displayed code in the official Roblox sign-in flow for your account. Registration opens on Roblox and is completed in the browser. [Roblox Quick Login instructions](https://en.help.roblox.com/hc/en-us/articles/360056582012-Quick-Login)
 
 ## What you can do
 

@@ -157,7 +157,7 @@ fn user_pass_body(app: &mut RodonApp, ui: &mut egui::Ui, dialog: &mut AddDialog)
         dialog.tab = Tab::Quick;
     }
     if ui.button("Create an account on Roblox").clicked() {
-        open_roblox(app, ui, "https://www.roblox.com/CreateAccount");
+        open_roblox(app, ui, "https://www.roblox.com/");
     }
     true
 }
@@ -177,7 +177,7 @@ pub(in crate::ui) fn open_roblox(app: &mut RodonApp, ui: &egui::Ui, url: &'stati
 
 fn quick_body(app: &mut RodonApp, ui: &mut egui::Ui, dialog: &mut AddDialog) -> bool {
     ui.label(
-        RichText::new("Enter this code at roblox.com/login/enterCode or in the Roblox app on a signed-in device.")
+        RichText::new("On your signed-in Roblox device, open Settings → Quick Login and enter this code.")
             .size(12.0)
             .color(app.palette.muted),
     );
@@ -188,7 +188,7 @@ fn quick_body(app: &mut RodonApp, ui: &mut egui::Ui, dialog: &mut AddDialog) -> 
             ui.add_space(4.0);
             ui.label(RichText::new("Waiting for approval…").size(12.0).color(app.palette.muted));
             if ui.button("Open Roblox to approve").clicked() {
-                open_roblox(app, ui, "https://www.roblox.com/login/enterCode");
+                open_roblox(app, ui, "https://www.roblox.com/crossdevicelogin/confirmcode");
             }
             ui.add(egui::Spinner::new());
         });
